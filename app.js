@@ -101,7 +101,7 @@ if (QS.get("u")) lsSet("unit-token", QS.get("u"));
 const randToken = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2,"0")).join("");
 
 function applyBoard(d){
-  S.role = d.role; S.me = d.me || null;
+  S.role = d.role; S.me = d.me || null; S.email = d.email || "";
   S.managers = new Map((d.units||[]).map(u => [u.id, {name:u.manager_name||"", track:u.name, phone:u.phone||"", site:u.site||DEFAULT_SITE, token:u.token||"", active:u.active!==false}]));
   S.courses = new Map((d.courses||[]).map(c => [c.id, {name:c.name, mid:c.unit_id, start:c.start_date, end:c.end_date, org:c.org, ext:c.ext, cancelled:false}]));
   S.reports = new Map((d.reports||[]).map(r => [r.report_date+"_"+r.unit_id, {date:r.report_date, mid:r.unit_id, staffIn:r.staff_in, staffOut:r.staff_out, noCourse:r.no_course, counts:r.counts||{}, at:r.reported_at}]));
@@ -153,10 +153,16 @@ async function boot(){
       if (f.newToken) row.token = randToken();
       const q = id ? sb.from("units").update(row).eq("id", id) : sb.from("units").insert({ ...row, sort_order: S.managers.size + 1 });
       const { error } = await q; if (error) throw error; await refresh(); },
-    async removeUnit(id){ const { error } = await sb.from("units").update({ active:false }).eq("id", id); if (error) throw error; await refresh(); }
+    async removeUnit(id){ const { error } = await sb.from("units").update({ active:false }).eq("id", id); if (error) throw error; await refresh(); },
+    async listMembers(){ const { data, error } = await sb.rpc("list_members"); if (error) throw error; return data || []; },
+    async saveMember(id, f){ const { error } = await sb.rpc("save_member", { p_id:id, p_name:f.name||"", p_role:f.role, p_email:f.email||null, p_link:!!f.link }); if (error) throw error; },
+    async rotateMember(id){ const { error } = await sb.rpc("rotate_member_link", { p_id:id }); if (error) throw error; },
+    async removeMember(id){ const { error } = await sb.rpc("remove_member", { p_id:id }); if (error) throw error; },
+    async signUp(email, password){ const { data, error } = await sb.auth.signUp({ email, password, options:{ emailRedirectTo: location.origin + location.pathname } }); if (error) throw error; return data; }
   };
   refresh();
 }
+const LM = [{ id:"p-me", name:"", role:"admin", email:"you@example.com", token:null, has_account:true, is_me:true }, { id:"p-v1", name:"סגן מפקד האגף", role:"viewer", email:null, token:"demoviewlink0001", has_account:false }];
 function startLocal(){
   S.mode = "local"; S.role = "admin";
   let saved = null;
@@ -169,13 +175,18 @@ function startLocal(){
     async submitReport(mid, staffIn, staffOut, counts){ const id = TODAY+"_"+mid, prev = S.reports.get(id); S.reports.set(id, {date:TODAY, mid, staffIn, staffOut, noCourse:!Object.keys(counts).length, counts, at: prev ? prev.at : new Date().toISOString()}); done(); },
     async addCourse(mid, x){ const id = "c-"+rid(6); S.courses.set(id, {name:x.name, mid, start:x.start, end:x.end, org:x.org||0, ext:x.ext||0, cancelled:false}); done(); return id; },
     async saveUnit(id, f){ const old = id ? S.managers.get(id) : {token:rid(6), active:true}; S.managers.set(id || "m-"+rid(6), {...old, name:f.name, track:f.track, phone:f.phone||"", site:f.site||DEFAULT_SITE, ...(f.newToken?{token:rid(6)}:{})}); done(); },
-    async removeUnit(id){ const m = S.managers.get(id); if (m) S.managers.set(id, {...m, active:false}); done(); }
+    async removeUnit(id){ const m = S.managers.get(id); if (m) S.managers.set(id, {...m, active:false}); done(); },
+    async listMembers(){ return LM.map(x => ({...x})); },
+    async saveMember(id, f){ if (id) { const x = LM.find(m => m.id === id); if (x) { x.role = f.role; x.name = f.name; } } else LM.push({ id:"p-"+rid(6), name:f.name, role:f.role, email:f.link?null:f.email, token:f.link?rid(16):null, has_account:false }); },
+    async rotateMember(id){ const x = LM.find(m => m.id === id); if (x) x.token = rid(16); },
+    async removeMember(id){ const i = LM.findIndex(m => m.id === id); if (i >= 0) LM.splice(i, 1); },
+    async signUp(){ throw new Error("local"); }
   };
   render(true);
 }
 const ready = () => S.got.size === 3;
 const canAdmin = () => S.mode === "local" || S.role === "admin";
-const canReport = mid => canAdmin() || (S.role === "unit" && S.me === mid);
+const canReport = mid => canAdmin() || S.role === "editor" || (S.role === "unit" && S.me === mid);
 
 /* ---------- computations ---------- */
 function activeManagers(site){ return [...S.managers.entries()].filter(([,m]) => m.active !== false && (!site || site === "all" || siteOf(m) === site)).map(([id,m]) => ({id, ...m, site: siteOf(m)})); }
@@ -248,8 +259,8 @@ function renderDash(){
           <button data-act="day" data-n="1" aria-label="יום עבודה הבא" ${UI.date>=TODAY?"disabled":""}>‹</button>
         </div>
         ${UI.date!==TODAY?`<button class="today-link" data-act="today">חזרה להיום</button>`:""}
-        ${S.mode==="live"&&S.role==="admin"?`<button class="today-link" style="color:var(--muted)" data-act="logout">יציאה</button>`:""}
-        ${S.role==="unit"&&S.managers.get(S.me)?`<span class="chip" aria-pressed="false">${esc(S.managers.get(S.me).track)}</span>`:""}
+        ${S.mode==="live"&&session?`<button class="today-link" style="color:var(--muted)" data-act="logout">יציאה</button>`:""}
+        ${S.role==="unit"&&S.managers.get(S.me)?`<span class="chip" aria-pressed="false">${esc(S.managers.get(S.me).track)}</span>`:S.role==="viewer"?`<span class="chip" aria-pressed="false">צפייה בלבד</span>`:S.role==="editor"?`<span class="chip" aria-pressed="false">עורך</span>`:""}
       </div>
     </div>
     <div class="nav-row">
@@ -257,6 +268,7 @@ function renderDash(){
         <button class="tab" role="tab" aria-selected="${UI.tab==="overview"}" data-act="tab" data-t="overview"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>תמונת מצב</button>
         <button class="tab" role="tab" aria-selected="${UI.tab==="status"}" data-act="tab" data-t="status"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8"/><circle cx="2.8" cy="4" r="1"/><circle cx="2.8" cy="8" r="1"/><circle cx="2.8" cy="12" r="1"/></svg>דיווחי מגמות${showDot?`<span class="dot" aria-label="חסרים דיווחים"></span>`:""}</button>
         <button class="tab" role="tab" aria-selected="${UI.tab==="history"}" data-act="tab" data-t="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 13H2V3"/><path d="M14 5l-4 4-2.5-2.5L4 10"/></svg>מגמות לאורך זמן</button>
+        ${canAdmin()?`<button class="tab" role="tab" aria-selected="${UI.tab==="perms"}" data-act="tab" data-t="perms"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.9v3.8c0 3.2 2.2 5.7 5.2 6.5 3-.8 5.2-3.3 5.2-6.5V3.9z"/><path d="m5.8 8 1.5 1.5L10.4 6.4"/></svg>הרשאות</button>`:""}
       </nav>
       ${sites.length>1?`<div class="sites" role="group" aria-label="סינון לפי אתר"><button class="chip" data-act="site" data-s="all" aria-pressed="${UI.site==="all"}">כל האגף</button>${sites.map(s=>`<button class="chip" data-act="site" data-s="${esc(s)}" aria-pressed="${UI.site===s}">${esc(s)}</button>`).join("")}</div>`:""}
     </div>
@@ -264,7 +276,7 @@ function renderDash(){
   <main class="wrap">
     ${examples?`<div class="note"><span class="tag">מצב הדגמה</span>נתונים בדויים שנשמרים רק בדפדפן הזה. כדי לחבר מסד נתונים אמיתי, מלאו את config.js (ראו README).</div>`:""}
     ${!isWork(UI.date)?`<div class="note"><b>יום ${DAYS.at(dow(UI.date))}.</b> אין דיווחים בימי שישי ושבת.</div>`:""}
-    ${UI.tab==="overview"?renderOverview(st):UI.tab==="status"?renderStatus(st):renderHistory()}
+    ${UI.tab==="overview"?renderOverview(st):UI.tab==="status"?renderStatus(st):UI.tab==="perms"&&canAdmin()?renderPerms():renderHistory()}
   </main>`;
 }
 
@@ -466,6 +478,115 @@ function wireHistory(){
   hit.addEventListener("pointerleave", () => { tip.hidden = true; hx.setAttribute("opacity","0"); });
 }
 
+/* ---------- permissions (system admins only) ---------- */
+const ROLE_INFO = {
+  admin:  { name:"מנהל מערכת", plural:"מנהלי מערכת", desc:"הכול: צפייה, דיווח על כל מגמה, ניהול מגמות והרשאות. כניסה עם מייל וסיסמה בלבד." },
+  editor: { name:"עורך",       plural:"עורכים",      desc:"צפייה ודיווח על כל המגמות, הוספת השתלמויות. בלי ניהול מגמות והרשאות." },
+  viewer: { name:"צופה",       plural:"צופים",       desc:"צפייה בלוח בלבד, בלי אפשרות לדווח או לשנות." }
+};
+const P = { list:null, loading:false, form:null, confirm:null, editRole:null };
+async function loadMembers(){
+  if (P.loading) return; P.loading = true;
+  try { P.list = await API.listMembers(); } catch(e) { toast(errMsg(e)); P.list = P.list || []; }
+  P.loading = false; render(true);
+}
+const PI = {
+  key: mi('<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M15 8l2 2"/>'),
+  user: mi('<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>'),
+  eye: mi('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  shield: mi('<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6z"/>'),
+  pen: mi('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
+  refresh: mi('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>')
+};
+const roleIcon = r => r === "admin" ? PI.shield : r === "editor" ? PI.pen : PI.eye;
+function memberRow(x){
+  const isLink = !!x.token;
+  const conf = P.confirm === x.id, editing = P.editRole === x.id;
+  const sub = isLink ? "קישור אישי" : esc(x.email);
+  const status = isLink ? `<span class="ustate good"><i></i>קישור פעיל</span>`
+    : x.has_account ? `<span class="ustate good"><i></i>${x.is_me?"זה אתה":"נרשם"}</span>` : `<span class="ustate"><i></i>טרם נרשם</span>`;
+  return `<div class="mem">
+    <span class="mem-ic r-${x.role}">${isLink?PI.key:PI.user}</span>
+    <div class="mem-main"><b>${esc(x.name || (isLink ? "קישור ללא שם" : x.email))}</b><span>${isLink || x.name ? sub : (x.is_me ? "החשבון שלך" : "מייל וסיסמה")}</span></div>
+    <div class="mem-st">${status}</div>
+    <div class="mem-acts">
+      ${conf ? `<span class="mem-q">להסיר את ההרשאה?</span><button class="btn sm danger-solid" data-act="perm-del-yes" data-id="${x.id}">הסרה</button><button class="btn sm" data-act="perm-cancel">ביטול</button>`
+      : editing ? `<div class="seg" role="group" aria-label="שינוי הרשאה">${["admin","editor","viewer"].filter(r => !(isLink && r==="admin")).map(r=>`<button data-act="perm-role" data-id="${x.id}" data-r="${r}" aria-pressed="${x.role===r}">${ROLE_INFO[r].name}</button>`).join("")}</div><button class="btn link" data-act="perm-cancel">סגירה</button>`
+      : `${isLink?`<button class="btn link" data-act="perm-copy" data-token="${esc(x.token)}">${MI.link}העתקה</button><a class="btn link" href="https://wa.me/?text=${encodeURIComponent(`קישור ל${CFG.BOARD_TITLE||"לוח ההתייצבות"} (${ROLE_INFO[x.role].name}):\n${linkFor(x.token)}`)}" target="_blank" rel="noopener">${MI.chat}וואטסאפ</a><button class="btn link" data-act="perm-rotate" data-id="${x.id}" title="הקישור הישן יפסיק לעבוד">${PI.refresh}קישור חדש</button>`:""}
+        ${x.is_me?"":`<button class="btn link" data-act="perm-edit" data-id="${x.id}">${MI.edit}שינוי הרשאה</button><button class="btn link danger" data-act="perm-del" data-id="${x.id}">${MI.trash}הסרה</button>`}`}
+    </div></div>`;
+}
+function permFormHTML(){
+  const f = P.form;
+  const link = f.kind === "link" && f.role !== "admin";
+  return `<section class="card addform perm-form">
+    <div class="sec-h"><h2>הרשאה חדשה</h2></div>
+    <div class="pf-row"><span class="pf-l">סוג הרשאה</span>
+      <div class="role-pick">${["viewer","editor","admin"].map(r=>`<button class="rp ${f.role===r?"on":""}" data-act="pf-role" data-r="${r}"><span class="rp-ic r-${r}">${roleIcon(r)}</span><b>${ROLE_INFO[r].name}</b><small>${ROLE_INFO[r].desc}</small></button>`).join("")}</div></div>
+    ${f.role!=="admin"?`<div class="pf-row"><span class="pf-l">איך ייכנסו</span>
+      <div class="seg" role="group"><button data-act="pf-kind" data-k="link" aria-pressed="${link}">קישור אישי</button><button data-act="pf-kind" data-k="account" aria-pressed="${!link}">מייל וסיסמה</button></div></div>`:""}
+    <div class="formgrid">
+      <div class="field"><label for="pf-name">שם</label><input id="pf-name" data-pbind="name" value="${esc(f.name)}" placeholder="לדוגמה: סגן מפקד האגף"></div>
+      ${link?"":`<div class="field"><label for="pf-email">מייל</label><input id="pf-email" type="email" dir="ltr" data-pbind="email" value="${esc(f.email)}" placeholder="name@example.com"></div>`}
+    </div>
+    <p class="pf-hint">${link
+      ? "ייווצר קישור אישי. מי שמקבל אותו נכנס בלי סיסמה. אפשר לבטל אותו או ליצור חדש בכל רגע."
+      : "אחרי השמירה, שלחו לאדם את כתובת האתר. בכניסה הראשונה הוא לוחץ \"פעם ראשונה? יצירת סיסמה\" עם המייל הזה, ומאשר את המייל שיקבל."}</p>
+    <div class="toolbar"><button class="btn primary" data-act="pf-save">${link?"יצירת קישור":"שמירה"}</button><button class="btn link" data-act="perm-cancel">ביטול</button></div>
+  </section>`;
+}
+function renderPerms(){
+  if (!canAdmin()) return `<div class="empty">רק מנהלי מערכת יכולים לנהל הרשאות.</div>`;
+  if (P.list === null) { loadMembers(); return `<div class="loading" style="min-height:30vh"><div class="bar"></div><div>טוען הרשאות…</div></div>`; }
+  const by = r => P.list.filter(x => x.role === r);
+  const unitsN = activeManagers("all").length;
+  return `
+  <section class="st-head">
+    <div><div class="eyebrow">ניהול גישה ללוח</div>
+      <div class="st-big">${P.list.length}</div>
+      <div class="st-sub">בעלי הרשאה, בנוסף ל-${unitsN} מנהלי מגמות</div></div>
+    <div class="toolbar">${P.form?"":`<button class="btn add-btn" data-act="perm-add">${MI.plus}הוספת הרשאה</button>`}</div>
+  </section>
+  ${P.form ? permFormHTML() : ""}
+  ${["admin","editor","viewer"].map(r => `<section class="sec">
+    <div class="sec-h"><h2><span class="h-ic r-${r}">${roleIcon(r)}</span>${ROLE_INFO[r].plural}</h2><span class="meta">${ROLE_INFO[r].desc}</span></div>
+    <div class="card mem-list">${by(r).map(memberRow).join("") || `<div class="empty">אין ${ROLE_INFO[r].plural} עדיין.</div>`}</div>
+  </section>`).join("")}
+  <section class="sec"><div class="sec-h"><h2><span class="h-ic r-unit">${MI.send}</span>מנהלי מגמות</h2><span class="meta">כל מנהל מגמה מדווח רק על המגמה שלו</span></div>
+    <div class="card" style="padding:14px 18px;font-size:13.5px;color:var(--ink-2)">את הקישור האישי של מנהל מגמה שולחים מהכרטיס שלה בלשונית <button class="btn link" style="display:inline;padding:0 2px;color:var(--brand)" data-act="tab" data-t="status">דיווחי מגמות</button> (⋮ ← וואטסאפ).</div></section>`;
+}
+const PERM_ERR = { cannot_remove_self:"אי אפשר להסיר את עצמך.", cannot_demote_self:"אי אפשר להוריד לעצמך הרשאה.", last_admin:"חייב להישאר לפחות מנהל מערכת אחד.", admin_needs_email:"מנהל מערכת נכנס רק עם מייל וסיסמה.", bad_email:"כתובת המייל לא תקינה." };
+const permErr = e => { const m = (e && e.message) || ""; const k = Object.keys(PERM_ERR).find(k => m.includes(k)); return k ? PERM_ERR[k] : errMsg(e); };
+async function permAction(a, b){
+  if (a === "perm-add") { P.form = { role:"viewer", kind:"link", name:"", email:"" }; render(true); document.getElementById("pf-name")?.focus(); }
+  else if (a === "perm-cancel") { P.form = null; P.confirm = null; P.editRole = null; render(true); }
+  else if (a === "pf-role") { P.form.role = b.dataset.r; render(true); }
+  else if (a === "pf-kind") { P.form.kind = b.dataset.k; render(true); }
+  else if (a === "pf-save") {
+    const f = P.form, link = f.kind === "link" && f.role !== "admin";
+    if (!link && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test((f.email||"").trim())) { toast("צריך מייל תקין."); return; }
+    b.disabled = true;
+    try {
+      await API.saveMember(null, { name:(f.name||"").trim(), role:f.role, email:link?null:f.email.trim(), link });
+      P.form = null; P.list = await API.listMembers();
+      toast(link ? "הקישור נוצר. אפשר להעתיק אותו או לשלוח בוואטסאפ." : "ההרשאה נשמרה. שלחו לאדם את כתובת האתר.");
+    } catch(e) { toast(permErr(e)); }
+    b.disabled = false; render(true);
+  }
+  else if (a === "perm-edit") { P.editRole = b.dataset.id; P.confirm = null; render(true); }
+  else if (a === "perm-role") {
+    const x = P.list.find(m => m.id === b.dataset.id); if (!x || x.role === b.dataset.r) { P.editRole = null; render(true); return; }
+    try { await API.saveMember(x.id, { name:x.name, role:b.dataset.r }); P.editRole = null; P.list = await API.listMembers(); toast(`ההרשאה שונתה ל${ROLE_INFO[b.dataset.r].name}.`); } catch(e) { toast(permErr(e)); }
+    render(true);
+  }
+  else if (a === "perm-del") { P.confirm = b.dataset.id; P.editRole = null; render(true); }
+  else if (a === "perm-del-yes") { try { await API.removeMember(b.dataset.id); P.confirm = null; P.list = await API.listMembers(); toast("ההרשאה הוסרה."); } catch(e) { toast(permErr(e)); } render(true); }
+  else if (a === "perm-rotate") { try { await API.rotateMember(b.dataset.id); P.list = await API.listMembers(); toast("נוצר קישור חדש. הקישור הקודם הפסיק לעבוד."); } catch(e) { toast(permErr(e)); } render(true); }
+  else if (a === "perm-copy") copyText(linkFor(b.dataset.token));
+  else return false;
+  return true;
+}
+
 /* ---------- reporter ---------- */
 const R = { step:0, draft:null, adding:null, sentAt:null };
 function reporterManager(id){ const m = S.managers.get(id); return m && m.active !== false && canReport(id) ? {id, ...m} : null; }
@@ -559,6 +680,7 @@ function afterRender(){
 document.addEventListener("input", e => {
   const t = e.target;
   if (t.dataset.bind && UI.mgrForm) UI.mgrForm[t.dataset.bind] = t.value;
+  if (t.dataset.pbind && P.form) P.form[t.dataset.pbind] = t.value;
   if (t.dataset.abind && R.adding) { R.adding[t.dataset.abind] = t.value; if (t.dataset.abind === "start" && R.adding.end < t.value) { R.adding.end = t.value; render(true); } }
   if (t.dataset.step) setVal(t.dataset.step, clampInt(t.value), false);
 });
@@ -584,7 +706,8 @@ document.addEventListener("click", async e => {
   const a = b.dataset.act;
   if (a === "menu") { UI.menu = UI.menu === b.dataset.id ? null : b.dataset.id; UI.confirmDel = null; render(true); return; }
   if (UI.menu) UI.menu = null;
-  if (a === "tab") { UI.tab = b.dataset.t; UI.mgrForm = null; UI.editId = null; UI.confirmDel = null; render(true); window.scrollTo({top:0}); }
+  if (a.startsWith("perm-") || a.startsWith("pf-")) { await permAction(a, b); return; }
+  if (a === "tab") { if (b.dataset.t === "perms") P.list = null; P.form = null; UI.tab = b.dataset.t; UI.mgrForm = null; UI.editId = null; UI.confirmDel = null; render(true); window.scrollTo({top:0}); }
   else if (a === "site") { UI.site = b.dataset.s; render(true); }
   else if (a === "day") { let d = addWork(UI.date, +b.dataset.n); if (d > TODAY) d = TODAY; if (d < FROM) d = FROM; UI.date = d; render(true); }
   else if (a === "today") { UI.date = TODAY; render(true); }
@@ -622,6 +745,9 @@ document.addEventListener("click", async e => {
   else if (a === "logout") { await sb.auth.signOut(); lsSet("unit-token", null); TOKEN = ""; location.href = location.pathname; }
   else if (a === "login") { await doLogin(b); }
   else if (a === "login-pass") { await doPassLogin(b); }
+  else if (a === "signup") { await doSignUp(b); }
+  else if (a === "login-mode") { LOGIN_MODE = b.dataset.m; render(true); }
+  else if (a === "reload") { location.reload(); }
   else if (a === "forget-token") { lsSet("unit-token", null); TOKEN = ""; history.replaceState(null, "", location.pathname); S.err = ""; render(true); }
   else if (a === "inc") { const k = b.dataset.k; setVal(k, Math.max(0, getVal(k) + (+b.dataset.n)), true); }
   else if (a === "rstep") { R.step = Math.max(0, Math.min(3, R.step + (+b.dataset.n))); render(true); window.scrollTo({top:0}); }
@@ -653,22 +779,49 @@ document.addEventListener("click", async e => {
 });
 
 /* ---------- login ---------- */
+let LOGIN_MODE = "in";
 function renderLogin(){
   const bad = S.err === "badtoken";
-  return `<div class="login"><div class="login-card">
-    <div class="login-mark">${EMBLEM}</div>
+  const head = `<div class="login-mark">${EMBLEM}</div>
     <div class="eyebrow">${esc(CFG.ORG_TITLE||"כבאות והצלה")}</div>
-    <h1>${esc(CFG.BOARD_TITLE||"אגף הדרכה · לוח התייצבות")}</h1>
-    ${bad?`<div class="note" style="color:var(--crit)">הקישור האישי הזה אינו פעיל. ייתכן שנוצר קישור חדש. בקשו קישור עדכני מאגף ההדרכה.</div><button class="btn" data-act="forget-token">ניקוי הקישור הישן</button>`
-      :`<p class="lead">מנהלי מגמות נכנסים דרך הקישור האישי שקיבלו.</p>`}
+    <h1>${esc(CFG.BOARD_TITLE||"אגף הדרכה · לוח התייצבות")}</h1>`;
+  if (session && S.mode === "live") {
+    const em = (session.user && session.user.email) || "";
+    return `<div class="login"><div class="login-card">${head}
+      <p class="lead">אתה מחובר בתור <b dir="ltr">${esc(em)}</b>, אבל עדיין אין לך הרשאה ללוח.</p>
+      <div class="note" style="justify-content:center">בקשו ממנהל מערכת להוסיף את המייל הזה בלשונית "הרשאות", ואז רעננו את הדף.</div>
+      <div class="toolbar" style="justify-content:center"><button class="btn" data-act="reload">רענון</button><button class="btn link" data-act="logout">יציאה</button></div>
+    </div></div>`;
+  }
+  const up = LOGIN_MODE === "up";
+  return `<div class="login"><div class="login-card">${head}
+    ${bad?`<div class="note" style="color:var(--crit)">הקישור האישי הזה אינו פעיל. ייתכן שנוצר קישור חדש. בקשו קישור עדכני.</div><button class="btn" data-act="forget-token">ניקוי הקישור הישן</button>`
+      :`<p class="lead">${up?"יצירת סיסמה למייל שקיבל הרשאה מאגף ההדרכה.":"מנהלי מגמות נכנסים דרך הקישור האישי שקיבלו."}</p>`}
     <form class="login-form" onsubmit="return false">
-      <label for="login-email">כניסת מנהל מערכת</label>
+      <label for="login-email">${up?"המייל שקיבל הרשאה":"כניסה עם מייל וסיסמה"}</label>
       <input id="login-email" type="email" dir="ltr" autocomplete="username" placeholder="name@example.com">
-      <input id="login-pass" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה">
-      <button class="btn primary" data-act="login-pass">כניסה</button>
-      <button class="btn link" data-act="login">אין לי סיסמה: שליחת קישור כניסה למייל</button>
+      <input id="login-pass" type="password" dir="ltr" autocomplete="${up?"new-password":"current-password"}" placeholder="${up?"סיסמה חדשה (לפחות 8 תווים)":"סיסמה"}">
+      ${up?`<button class="btn primary" data-act="signup">יצירת סיסמה</button><button class="btn link" data-act="login-mode" data-m="in">כבר יש לי סיסמה: כניסה</button>`
+        :`<button class="btn primary" data-act="login-pass">כניסה</button>
+      <button class="btn link" data-act="login-mode" data-m="up">פעם ראשונה? יצירת סיסמה</button>
+      <button class="btn link" data-act="login">שכחתי סיסמה: שליחת קישור כניסה למייל</button>`}
     </form>
   </div></div>`;
+}
+async function doSignUp(b){
+  const email = (document.getElementById("login-email")?.value || "").trim(), pass = document.getElementById("login-pass")?.value || "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast("כתובת המייל לא תקינה."); return; }
+  if (pass.length < 8) { toast("הסיסמה צריכה להיות לפחות 8 תווים."); return; }
+  b.disabled = true;
+  try {
+    const d = await API.signUp(email, pass);
+    if (d && d.session) toast("הסיסמה נוצרה ונכנסת.");
+    else { LOGIN_MODE = "in"; render(true); toast("שלחנו מייל אישור. לחצו על הקישור שבו, ואז היכנסו עם המייל והסיסמה."); }
+  } catch(e) {
+    const m = (e && e.message) || "";
+    toast(/registered|exists/i.test(m) ? "למייל הזה כבר יש סיסמה. היכנסו, או השתמשו ב\"שכחתי סיסמה\"." : /rate|429/i.test(m) ? "נשלחו יותר מדי מיילים בזמן קצר. נסו שוב בעוד שעה." : "יצירת הסיסמה נכשלה: " + m);
+  }
+  b.disabled = false;
 }
 async function doLogin(b){
   const el = document.getElementById("login-email"); const email = (el && el.value || "").trim();
