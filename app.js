@@ -288,40 +288,64 @@ function renderDash(){
   </main>`;
 }
 
-const EMBLEM_BIG = `<svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="15.5" fill="none" stroke="currentColor" stroke-width=".5"/><path d="M17 8.5c1.6 3.1 5 4.9 5 9.2a5 5 0 0 1-10 0c0-2 1.1-3.4 2.2-4.4.2 1.5 1 2.4 2.1 2.9-.4-2.6-.2-5.4.7-7.7z" fill="none" stroke="currentColor" stroke-width=".5" stroke-linejoin="round"/><path d="M11 25.5h12" stroke="currentColor" stroke-width=".5" stroke-linecap="round"/></svg>`;
+const FLAME_WM = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width=".9" stroke-linejoin="round"><path d="M50 6c7 14 22 22 22 41a22 22 0 0 1-44 0c0-9 5-16 10-20 1 7 5 11 10 13-2-12-1-24 2-34z"/><path d="M50 52c3 5 8 8 8 15a8 8 0 0 1-16 0c0-4 2-6 4-8 0 3 2 4 4 5-1-4 0-8 0-12z"/></svg>`;
+const HEX_OUT = "56,4 106,33 106,91 56,120 6,91 6,33", HEX_IN = "56,12 99,37 99,87 56,112 13,87 13,37";
+
+function hexCell(u, mx, multi){
+  const m = u.m, rep = u.rep, s = repStatus(rep, UI.date), n = u.staffIn + u.org + u.ext;
+  const name = esc((m.track || "").replace(/^מגמת\s+/, ""));
+  const st = rep ? (s.late ? "late" : "on") : (s.cls === "crit" ? "miss" : "off");
+  const chip = rep ? (s.time || "דווח") : s.cls === "crit" ? "לא דווח" : s.wait ? "ממתין" : "—";
+  const shape = rep
+    ? `<polygon points="${HEX_OUT}" class="hx-fill"/><polygon points="${HEX_IN}" class="hx-in"/>`
+    : `<polygon points="${HEX_OUT}" class="hx-empty"/>`;
+  return `<button class="hcell ${st}" data-act="tab" data-t="status" title="${esc(m.track)} · ${rep?(s.late?"דווח באיחור":"דווח"):s.txt}">
+    <span class="hex"><svg viewBox="0 0 112 124" aria-hidden="true">${shape}</svg><span class="hin">${uIcon(m.track)}<strong>${rep ? fmt(n) : (s.wait ? "ממתין" : s.cls === "crit" ? "חסר" : "—")}</strong></span></span>
+    <span class="hshare">${rep ? `<i style="width:${mx ? Math.max(4, n / mx * 100) : 0}%"></i>` : ""}</span>
+    <b class="hname">${name}</b>
+    <small class="hmgr">${esc(m.name || "טרם הוגדר")}${multi ? ` · ${esc(m.site)}` : ""}</small>
+    <span class="htm">${chip}</span>
+  </button>`;
+}
 
 function renderOverview(st){
   const missing = st.units.filter(u => !u.rep);
   const after = UI.date < TODAY || nowHM() >= dlFor(UI.date);
   const scope = UI.site === "all" ? "באתרי ההדרכה" : `ב${UI.site}`;
+  const multi = allSites().length > 1;
+  const kicker = `${heLong(UI.date)}${UI.date===TODAY?` · ${nowHM()}`:""}${isWork(UI.date)?` · נסגר ב-${dlFor(UI.date)}`:""}`;
   const fig = (k, v) => `<div class="fire-fig"><b>${fmt(v)}</b><span>${k}</span></div>`;
+  const order = u => u.rep ? 0 : 1;
+  const units = st.units.slice().sort((a,b) => order(a) - order(b) || a.m.track.localeCompare(b.m.track, "he"));
+  const mx = Math.max(0, ...units.filter(u => u.rep).map(u => u.staffIn + u.org + u.ext));
+  const rule = !st.total ? "" : !isWork(UI.date) ? `<div class="fire-rule"><span>אין חובת דיווח ביום הזה</span></div>`
+    : `<div class="fire-rule"><button class="fire-rep ${missing.length&&after?"alarm":""}" data-act="tab" data-t="status"><i></i><b>${st.reported} מתוך ${st.total}</b> מגמות דיווחו</button>${missing.length?`<span class="${after?"crit":""}">${after?"חסר דיווח":"ממתינים"}: ${missing.map(u=>esc(u.m.track.replace(/^מגמת\s+/,""))).join(" · ")}</span>`:`<span>כל המגמות דיווחו</span>`}</div>`;
+
   const hero = `<section class="fire">
-    <div class="fire-mark" aria-hidden="true">${EMBLEM_BIG}</div>
-    <div class="fire-top"><span>${UI.date===TODAY?`היום · ${nowHM()}`:heLong(UI.date)}</span>${st.total?`<button class="fire-rep ${missing.length&&after?"alarm":""}" data-act="tab" data-t="status"><i></i>${st.reported}/${st.total} מגמות דיווחו</button>`:""}</div>
-    <div class="fire-num">${fmt(st.onSite)}</div>
-    <div class="fire-unit">אנשים ${scope}</div>
-    <div class="fire-row">${fig("סגל",st.staffIn)}${fig("חניכי הארגון",st.org)}${fig("מחוץ לארגון",st.ext)}${fig("השתלמויות",st.courses.length)}</div>
+    <div class="fire-mark" aria-hidden="true">${FLAME_WM}</div>
+    <div class="fire-head">
+      <div class="fire-main"><div class="fire-top">${kicker}</div><div class="fire-num">${fmt(st.onSite)}</div></div>
+      <div class="fire-unit">אנשים ${scope}</div>
+      <div class="fire-row">${fig("סגל",st.staffIn)}${fig("חניכי הארגון",st.org)}${fig("מחוץ לארגון",st.ext)}${fig("השתלמויות",st.courses.length)}</div>
+    </div>
+    ${units.length?`<div class="hrow">${units.map(u => hexCell(u, mx, multi)).join("")}</div>`:`<div class="hempty">לא הוגדרו מגמות.</div>`}
+    ${rule}
   </section>`;
 
-  const miss = !isWork(UI.date) ? "" : missing.length ? `<section class="quiet-row"><span class="ql">${after?"חסר דיווח":"ממתינים לדיווח"}</span><div class="units">${missing.map(u=>`<span class="unit ${after?"miss":"wait"}"><i></i>${esc(u.m.track)}${allSites().length>1?`<time>${esc(u.m.site)}</time>`:""}</span>`).join("")}</div></section>` : (st.total ? `<section class="quiet-row"><span class="status good"><i></i>כל המגמות דיווחו</span></section>` : "");
-
   const bySite = {}; st.units.forEach(u => (bySite[u.m.site] ||= []).push(u));
-  let places;
+  let placesSec = "";
   if (UI.site === "all" && Object.keys(bySite).length > 1) {
-    places = Object.entries(bySite).map(([s,us]) => {
+    const places = Object.entries(bySite).map(([s,us]) => {
       const n = us.reduce((a,u)=>a+u.staffIn+u.org+u.ext,0), r = us.filter(u=>u.rep).length;
       return `<button class="place" data-act="site" data-s="${esc(s)}"><span class="pn">${esc(s)}</span><b>${fmt(n)}</b><span class="ps ${r<us.length&&after?"alarm":""}">${r}/${us.length} דיווחו</span></button>`;
     }).join("");
-  } else {
-    const order = u => u.rep ? 2 : (repStatus(null, UI.date).cls === "crit" ? 0 : 1);
-    places = st.units.slice().sort((a,b) => order(a) - order(b) || a.m.track.localeCompare(b.m.track, "he")).map(u => unitCard(u, UI.date, false, false)).join("");
+    placesSec = `<section class="sec"><div class="sec-h"><h2>לפי אתר</h2></div><div class="places">${places}</div></section>`;
   }
-  const placesSec = `<section class="sec"><div class="sec-h"><h2>סטטוס דיווחי מגמות</h2></div><div class="${UI.site==="all" && Object.keys(bySite).length > 1 ? "places" : "ugrid"}">${places || `<div class="empty">אין נתונים.</div>`}</div></section>`;
 
-  const courses = st.courses.slice().sort((a,b)=>(b.o+b.e)-(a.o+a.e)).map(c => `<div class="crow"><div class="cn"><span>${esc(c.name)}</span><small>${allSites().length>1?esc(c.site):esc(c.track)}</small></div><span class="cd">${c.dayT>1?`יום ${c.dayN}/${c.dayT}`:"יום אחד"}</span><b>${fmt(c.o+c.e)}</b></div>`).join("");
-  const coursesSec = `<section class="sec"><div class="sec-h"><h2>השתלמויות היום</h2></div><div class="card clist">${courses || `<div class="empty">אין השתלמויות פעילות.</div>`}</div></section>`;
+  const courses = st.courses.slice().sort((a,b)=>(b.o+b.e)-(a.o+a.e)).map(c => `<div class="crow"><div class="cn"><span>${esc(c.name)}</span><small>${multi?esc(c.site):esc(c.track)}</small></div><span class="cd">${c.dayT>1?`יום ${c.dayN}/${c.dayT}`:"יום אחד"}</span><b>${fmt(c.o+c.e)}</b></div>`).join("");
+  const coursesSec = `<section class="sec"><div class="sec-h"><h2>השתלמויות היום</h2></div><div class="card clist ${st.courses.length>1?"cols2":""}">${courses || `<div class="empty">אין השתלמויות פעילות.</div>`}</div></section>`;
 
-  return hero + miss + placesSec + coursesSec;
+  return hero + placesSec + coursesSec;
 }
 
 const ICONS = {
