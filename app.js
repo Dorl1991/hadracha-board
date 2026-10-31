@@ -11,7 +11,10 @@ const nowHM = () => hmInTZ(new Date());
 function parts(iso){ const [y,m,d] = iso.split("-").map(Number); return {y,m,d}; }
 function addDays(iso,n){ const {y,m,d}=parts(iso); return new Date(Date.UTC(y,m-1,d+n)).toISOString().slice(0,10); }
 function dow(iso){ const {y,m,d}=parts(iso); return new Date(Date.UTC(y,m-1,d)).getUTCDay(); }
-const isWork = iso => dow(iso) <= 4;
+const SPECIAL = new Map();
+const specialOf = iso => SPECIAL.get(iso) || null;
+const isWork = iso => dow(iso) <= 4 && !(SPECIAL.get(iso) && SPECIAL.get(iso).kind === "off");
+const dlFor = iso => { const s = SPECIAL.get(iso); return s && s.kind === "short" && s.deadline ? s.deadline : DEADLINE; };
 function addWork(iso,n){ let d=iso, k=Math.abs(n); const s=n<0?-1:1; while(k>0){ d=addDays(d,s); if(isWork(d)) k--; } return d; }
 function workdaysBetween(a,b){ const out=[]; let d=a; while(d<=b){ if(isWork(d)) out.push(d); d=addDays(d,1);} return out; }
 const DAYS = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"];
@@ -102,6 +105,7 @@ const randToken = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b =>
 
 function applyBoard(d){
   S.role = d.role; S.me = d.me || null; S.email = d.email || "";
+  SPECIAL.clear(); (d.special||[]).forEach(x => SPECIAL.set(x.day, {kind:x.kind, deadline:x.deadline||null, label:x.label||""}));
   S.managers = new Map((d.units||[]).map(u => [u.id, {name:u.manager_name||"", track:u.name, phone:u.phone||"", site:u.site||DEFAULT_SITE, token:u.token||"", active:u.active!==false}]));
   S.courses = new Map((d.courses||[]).map(c => [c.id, {name:c.name, mid:c.unit_id, start:c.start_date, end:c.end_date, org:c.org, ext:c.ext, cancelled:false}]));
   S.reports = new Map((d.reports||[]).map(r => [r.report_date+"_"+r.unit_id, {date:r.report_date, mid:r.unit_id, staffIn:r.staff_in, staffOut:r.staff_out, noCourse:r.no_course, counts:r.counts||{}, at:r.reported_at}]));
@@ -158,6 +162,10 @@ async function boot(){
     async saveMember(id, f){ const { error } = await sb.rpc("save_member", { p_id:id, p_name:f.name||"", p_role:f.role, p_email:f.email||null, p_link:!!f.link }); if (error) throw error; },
     async rotateMember(id){ const { error } = await sb.rpc("rotate_member_link", { p_id:id }); if (error) throw error; },
     async removeMember(id){ const { error } = await sb.rpc("remove_member", { p_id:id }); if (error) throw error; },
+    async saveSpecial(rows){ const { error } = await sb.from("special_days").upsert(rows); if (error) throw error; await refresh(); },
+    async removeSpecial(day){ const { error } = await sb.from("special_days").delete().eq("day", day); if (error) throw error; await refresh(); },
+    async setDigest(id, on){ const { error } = await sb.rpc("set_member_digest", { p_id:id, p_on:on }); if (error) throw error; },
+    async testSummary(){ const { data, error } = await sb.functions.invoke("daily-summary", { body:{ test:true } }); if (error) throw error; return data; },
     async signUp(email, password){ const { data, error } = await sb.auth.signUp({ email, password, options:{ emailRedirectTo: location.origin + location.pathname } }); if (error) throw error; return data; }
   };
   refresh();
@@ -180,6 +188,10 @@ function startLocal(){
     async saveMember(id, f){ if (id) { const x = LM.find(m => m.id === id); if (x) { x.role = f.role; x.name = f.name; } } else LM.push({ id:"p-"+rid(6), name:f.name, role:f.role, email:f.link?null:f.email, token:f.link?rid(16):null, has_account:false }); },
     async rotateMember(id){ const x = LM.find(m => m.id === id); if (x) x.token = rid(16); },
     async removeMember(id){ const i = LM.findIndex(m => m.id === id); if (i >= 0) LM.splice(i, 1); },
+    async saveSpecial(rows){ rows.forEach(r => SPECIAL.set(r.day, {kind:r.kind, deadline:r.deadline, label:r.label})); render(true); },
+    async removeSpecial(day){ SPECIAL.delete(day); render(true); },
+    async setDigest(id, on){ const x = LM.find(m => m.id === id); if (x) x.digest = on; },
+    async testSummary(){ throw new Error("local"); },
     async signUp(){ throw new Error("local"); }
   };
   render(true);
@@ -211,10 +223,10 @@ function dayStats(D, site){
   return {D, units, staffIn, staffOut, org, ext, trainees: org+ext, onSite: staffIn + org + ext, courses, reported, total: units.length};
 }
 function repStatus(rep, D){
-  if (rep) { const t = timeOf(rep.at); return t && t > DEADLINE ? {cls:"warn", txt:"דווח באיחור", time:t, late:true} : {cls:"good", txt:"דווח", time:t}; }
+  if (rep) { const t = timeOf(rep.at); return t && t > dlFor(rep.date || D) ? {cls:"warn", txt:"דווח באיחור", time:t, late:true} : {cls:"good", txt:"דווח", time:t}; }
   if (!isWork(D)) return {cls:"muted", txt:"יום ללא פעילות"};
   if (D > TODAY) return {cls:"muted", txt:"עתידי"};
-  if (D === TODAY && nowHM() < DEADLINE) return {cls:"muted", txt:"ממתין", wait:true};
+  if (D === TODAY && nowHM() < dlFor(D)) return {cls:"muted", txt:"ממתין", wait:true};
   return {cls:"crit", txt:"חסר דיווח"};
 }
 const deltaTxt = (a,b) => { const d = a - b; if (!d) return "ללא שינוי מיום העבודה הקודם"; return `${d>0?"+":"−"}${fmt(Math.abs(d))} מיום העבודה הקודם`; };
@@ -245,7 +257,7 @@ function renderDash(){
   const st = dayStats(UI.date, UI.site);
   const todaySt = dayStats(TODAY, "all");
   const missToday = todaySt.units.filter(u => !u.rep).length;
-  const showDot = isWork(TODAY) && missToday > 0 && nowHM() >= DEADLINE;
+  const showDot = isWork(TODAY) && missToday > 0 && nowHM() >= dlFor(TODAY);
   const examples = S.mode === "local";
   return `
   <header class="mast"><div class="wrap">
@@ -268,14 +280,14 @@ function renderDash(){
         <button class="tab" role="tab" aria-selected="${UI.tab==="overview"}" data-act="tab" data-t="overview"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>תמונת מצב</button>
         <button class="tab" role="tab" aria-selected="${UI.tab==="status"}" data-act="tab" data-t="status"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8"/><circle cx="2.8" cy="4" r="1"/><circle cx="2.8" cy="8" r="1"/><circle cx="2.8" cy="12" r="1"/></svg>דיווחי מגמות${showDot?`<span class="dot" aria-label="חסרים דיווחים"></span>`:""}</button>
         <button class="tab" role="tab" aria-selected="${UI.tab==="history"}" data-act="tab" data-t="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 13H2V3"/><path d="M14 5l-4 4-2.5-2.5L4 10"/></svg>מגמות לאורך זמן</button>
-        ${canAdmin()?`<button class="tab" role="tab" aria-selected="${UI.tab==="perms"}" data-act="tab" data-t="perms"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.9v3.8c0 3.2 2.2 5.7 5.2 6.5 3-.8 5.2-3.3 5.2-6.5V3.9z"/><path d="m5.8 8 1.5 1.5L10.4 6.4"/></svg>הרשאות</button>`:""}
+        ${canAdmin()?`<button class="tab" role="tab" aria-selected="${UI.tab==="perms"}" data-act="tab" data-t="perms"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 2.8 3.9v3.8c0 3.2 2.2 5.7 5.2 6.5 3-.8 5.2-3.3 5.2-6.5V3.9z"/><path d="m5.8 8 1.5 1.5L10.4 6.4"/></svg>ניהול</button>`:""}
       </nav>
       ${sites.length>1?`<div class="sites" role="group" aria-label="סינון לפי אתר"><button class="chip" data-act="site" data-s="all" aria-pressed="${UI.site==="all"}">כל האגף</button>${sites.map(s=>`<button class="chip" data-act="site" data-s="${esc(s)}" aria-pressed="${UI.site===s}">${esc(s)}</button>`).join("")}</div>`:""}
     </div>
   </div></header>
   <main class="wrap">
     ${examples?`<div class="note"><span class="tag">מצב הדגמה</span>נתונים בדויים שנשמרים רק בדפדפן הזה. כדי לחבר מסד נתונים אמיתי, מלאו את config.js (ראו README).</div>`:""}
-    ${!isWork(UI.date)?`<div class="note"><b>יום ${DAYS.at(dow(UI.date))}.</b> אין דיווחים בימי שישי ושבת.</div>`:""}
+    ${!isWork(UI.date)?(specialOf(UI.date)?`<div class="note"><span class="tag">${esc(specialOf(UI.date).label||"יום מיוחד")}</span>אין חובת דיווח ביום הזה.</div>`:`<div class="note"><b>יום ${DAYS.at(dow(UI.date))}.</b> אין דיווחים בימי שישי ושבת.</div>`):specialOf(UI.date)&&specialOf(UI.date).kind==="short"?`<div class="note"><span class="tag">${esc(specialOf(UI.date).label||"יום מקוצר")}</span>הדיווח נסגר היום ב-${dlFor(UI.date)}.</div>`:""}
     ${UI.tab==="overview"?renderOverview(st):UI.tab==="status"?renderStatus(st):UI.tab==="perms"&&canAdmin()?renderPerms():renderHistory()}
   </main>`;
 }
@@ -284,7 +296,7 @@ const EMBLEM_BIG = `<svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="15.5" fi
 
 function renderOverview(st){
   const missing = st.units.filter(u => !u.rep);
-  const after = UI.date < TODAY || nowHM() >= DEADLINE;
+  const after = UI.date < TODAY || nowHM() >= dlFor(UI.date);
   const scope = UI.site === "all" ? "באתרי ההדרכה" : `ב${UI.site}`;
   const fig = (k, v) => `<div class="fire-fig"><b>${fmt(v)}</b><span>${k}</span></div>`;
   const hero = `<section class="fire">
@@ -392,13 +404,13 @@ function renderStatus(st){
   const order = u => u.rep ? 2 : (repStatus(null, UI.date).cls === "crit" ? 0 : 1);
   const units = st.units.slice().sort((a,b) => order(a) - order(b) || a.m.track.localeCompare(b.m.track, "he"));
   const missing = st.total - st.reported;
-  const after = UI.date < TODAY || nowHM() >= DEADLINE;
+  const after = UI.date < TODAY || nowHM() >= dlFor(UI.date);
   const cards = units.map(u => unitCard(u, UI.date, admin)).join("");
   return `
   <section class="st-head">
     <div><div class="eyebrow">${heLong(UI.date)}</div>
       <div class="st-big">${st.reported}<span>/${st.total}</span></div>
-      <div class="st-sub ${missing&&after&&isWork(UI.date)?"alarm":""}">${!isWork(UI.date)?"אין חובת דיווח בסוף השבוע":missing?(after?`חסרים ${missing} דיווחים`:`ממתינים ל-${missing} דיווחים · נסגר ב-${DEADLINE}`):"כל המגמות דיווחו"}</div></div>
+      <div class="st-sub ${missing&&after&&isWork(UI.date)?"alarm":""}">${!isWork(UI.date)?(specialOf(UI.date)?`${esc(specialOf(UI.date).label||"יום מיוחד")}: אין חובת דיווח`:"אין חובת דיווח בסוף השבוע"):missing?(after?`חסרים ${missing} דיווחים`:`ממתינים ל-${missing} דיווחים · נסגר ב-${DEADLINE}`):"כל המגמות דיווחו"}</div></div>
     <div class="toolbar">
             ${admin?`<button class="btn add-btn" data-act="mgr-add">${MI.plus}הוספת מגמה ומנהל</button>`:""}
     </div>
@@ -428,7 +440,7 @@ function renderHistory(){
   const every = Math.ceil(days.length/8);
   const last = days.length-1;
   HIST = {days, data, X, series, W};
-  const pend = x => x.D===TODAY && nowHM()<DEADLINE;
+  const pend = x => x.D===TODAY && nowHM()<dlFor(x.D);
   const svg = `<svg id="histsvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="נוכחות לאורך ${days.length} ימי עבודה">
     ${ticks.map(v=>`<line x1="${L}" x2="${W-Rr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text class="axis" x="${L-8}" y="${Y(v)+4}" text-anchor="end" font-size="11" fill="var(--muted)">${v}</text>`).join("")}
     ${days.map((dd,i)=> i%every===0 || i===last ? `<text class="axis" x="${X(i)}" y="${H-B+18}" text-anchor="middle" font-size="11" fill="var(--muted)">${heShort(dd)}</text>`:"").join("")}
@@ -496,7 +508,9 @@ const PI = {
   eye: mi('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
   shield: mi('<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6z"/>'),
   pen: mi('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
-  refresh: mi('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>')
+  refresh: mi('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
+  cal: mi('<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
+  mail: mi('<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>')
 };
 const roleIcon = r => r === "admin" ? PI.shield : r === "editor" ? PI.pen : PI.eye;
 function memberRow(x){
@@ -542,7 +556,7 @@ function renderPerms(){
   const unitsN = activeManagers("all").length;
   return `
   <section class="st-head">
-    <div><div class="eyebrow">ניהול גישה ללוח</div>
+    <div><div class="eyebrow">ניהול המערכת</div>
       <div class="st-big">${P.list.length}</div>
       <div class="st-sub">בעלי הרשאה, בנוסף ל-${unitsN} מנהלי מגמות</div></div>
     <div class="toolbar">${P.form?"":`<button class="btn add-btn" data-act="perm-add">${MI.plus}הוספת הרשאה</button>`}</div>
@@ -552,6 +566,8 @@ function renderPerms(){
     <div class="sec-h"><h2><span class="h-ic r-${r}">${roleIcon(r)}</span>${ROLE_INFO[r].plural}</h2><span class="meta">${ROLE_INFO[r].desc}</span></div>
     <div class="card mem-list">${by(r).map(memberRow).join("") || `<div class="empty">אין ${ROLE_INFO[r].plural} עדיין.</div>`}</div>
   </section>`).join("")}
+  ${summarySectionHTML()}
+  ${specialSectionHTML()}
   <section class="sec"><div class="sec-h"><h2><span class="h-ic r-unit">${MI.send}</span>מנהלי מגמות</h2><span class="meta">כל מנהל מגמה מדווח רק על המגמה שלו</span></div>
     <div class="card" style="padding:14px 18px;font-size:13.5px;color:var(--ink-2)">את הקישור האישי של מנהל מגמה שולחים מהכרטיס שלה בלשונית <button class="btn link" style="display:inline;padding:0 2px;color:var(--brand)" data-act="tab" data-t="status">דיווחי מגמות</button> (⋮ ← וואטסאפ).</div></section>`;
 }
@@ -583,6 +599,104 @@ async function permAction(a, b){
   else if (a === "perm-del-yes") { try { await API.removeMember(b.dataset.id); P.confirm = null; P.list = await API.listMembers(); toast("ההרשאה הוסרה."); } catch(e) { toast(permErr(e)); } render(true); }
   else if (a === "perm-rotate") { try { await API.rotateMember(b.dataset.id); P.list = await API.listMembers(); toast("נוצר קישור חדש. הקישור הקודם הפסיק לעבוד."); } catch(e) { toast(permErr(e)); } render(true); }
   else if (a === "perm-copy") copyText(linkFor(b.dataset.token));
+  else return false;
+  return true;
+}
+
+/* ---------- special days & morning summary (system admins) ---------- */
+function israelHolidays(fromIso, days){
+  const f = new Intl.DateTimeFormat("en-u-ca-hebrew", { timeZone:"UTC", day:"numeric", month:"long" });
+  const heb = iso => { const p = f.formatToParts(new Date(iso + "T12:00:00Z")); return { m: p.find(x => x.type === "month").value, d: Number(p.find(x => x.type === "day").value) }; };
+  const FIXED = { "Tishri 1":"ראש השנה", "Tishri 2":"ראש השנה", "Tishri 10":"יום כיפור", "Tishri 15":"סוכות", "Tishri 22":"שמחת תורה",
+                  "Nisan 15":"פסח", "Nisan 21":"שביעי של פסח", "Sivan 6":"שבועות" };
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const iso = addDays(fromIso, i), h = heb(iso), w = dow(iso);
+    let label = FIXED[h.m + " " + h.d] || null;
+    if (!label && h.m === "Iyar" && h.d >= 3 && h.d <= 6) {
+      // יום העצמאות: ה' באייר, מוקדם/נדחה לפי החוק כדי לא לחלל שבת
+      if ((h.d === 5 && w >= 2 && w <= 4) || (h.d === 4 && w === 4) || (h.d === 3 && w === 4) || (h.d === 6 && w === 2)) {
+        const real5 = h.d === 5 ? iso : addDays(iso, 5 - h.d);
+        const w5 = dow(real5);
+        const ok = (h.d === 5 && w5 >= 2 && w5 <= 4) || (h.d === 4 && w5 === 5) || (h.d === 3 && w5 === 6) || (h.d === 6 && w5 === 1);
+        if (ok) label = "יום העצמאות";
+      }
+    }
+    if (label && w <= 4) out.push({ day: iso, label });
+  }
+  return out;
+}
+const SD = { form:null, confirm:null };
+function specialSectionHTML(){
+  const upcoming = [...SPECIAL.entries()].filter(([d]) => d >= TODAY).sort(([a],[b]) => a < b ? -1 : 1);
+  const f = SD.form;
+  return `<section class="sec">
+    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.cal}</span>ימים מיוחדים</h2><span class="meta">חגים וימים מקוצרים. ביום חג אין חובת דיווח ואין התראות.</span></div>
+    <div class="card mem-list">
+      <div class="sd-tools">
+        <button class="btn" data-act="pf-holidays">${PI.cal}הוספת חגי ישראל לשנה הקרובה</button>
+        ${f?"":`<button class="btn link" data-act="pf-sd-add">${MI.plus}יום מיוחד ידני</button>`}
+      </div>
+      ${f?`<div class="sd-form">
+        <div class="field"><label for="sd-day">תאריך</label><input id="sd-day" type="date" data-sbind="day" value="${f.day}" min="${TODAY}"></div>
+        <div class="field"><label>סוג</label><div class="seg" role="group"><button data-act="pf-sd-kind" data-k="off" aria-pressed="${f.kind==="off"}">אין דיווח</button><button data-act="pf-sd-kind" data-k="short" aria-pressed="${f.kind==="short"}">שעת סגירה אחרת</button></div></div>
+        ${f.kind==="short"?`<div class="field"><label for="sd-dl">נסגר ב-</label><input id="sd-dl" type="time" data-sbind="deadline" value="${f.deadline}"></div>`:""}
+        <div class="field" style="flex:1 1 180px"><label for="sd-label">שם</label><input id="sd-label" data-sbind="label" value="${esc(f.label)}" placeholder="לדוגמה: ערב פסח"></div>
+        <div class="toolbar"><button class="btn primary" data-act="pf-sd-save">שמירה</button><button class="btn link" data-act="pf-sd-cancel">ביטול</button></div>
+      </div>`:""}
+      ${upcoming.map(([d, x]) => `<div class="mem">
+        <span class="mem-ic ${x.kind==="off"?"r-admin":"r-editor"}">${PI.cal}</span>
+        <div class="mem-main"><b>${esc(x.label || (x.kind==="off"?"יום ללא דיווח":"יום מקוצר"))}</b><span>${heLong(d)}</span></div>
+        <div class="mem-st"><span class="ustate ${x.kind==="off"?"crit":"warn"}"><i></i>${x.kind==="off"?"אין דיווח":`נסגר ב-${x.deadline}`}</span></div>
+        <div class="mem-acts">${SD.confirm===d?`<button class="btn sm danger-solid" data-act="pf-sd-del-yes" data-d="${d}">הסרה</button><button class="btn sm" data-act="pf-sd-cancel">ביטול</button>`:`<button class="btn link danger" data-act="pf-sd-del" data-d="${d}">${MI.trash}הסרה</button>`}</div>
+      </div>`).join("") || `<div class="empty">אין ימים מיוחדים קרובים.</div>`}
+    </div></section>`;
+}
+function summarySectionHTML(){
+  const rec = (P.list||[]).filter(x => x.email);
+  return `<section class="sec">
+    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.mail}</span>סיכום בוקר במייל</h2><span class="meta">נשלח בימי עבודה בשעה 10:15: כמה אנשים באתרים ומי לא דיווח.</span></div>
+    <div class="card mem-list">
+      ${rec.map(x => `<label class="mem sw-row">
+        <span class="mem-ic r-${x.role}">${PI.user}</span>
+        <div class="mem-main"><b>${esc(x.name || x.email)}</b><span dir="ltr" style="text-align:right">${esc(x.email)}</span></div>
+        <span></span>
+        <span class="switch"><input type="checkbox" data-act="pf-digest" data-id="${x.id}" ${x.digest?"checked":""} aria-label="סיכום בוקר ל${esc(x.name || x.email)}"><i></i></span>
+      </label>`).join("") || `<div class="empty">אפשר לשלוח סיכום רק למי שנכנס עם מייל. הוסיפו הרשאה עם מייל למעלה.</div>`}
+      <div class="sd-tools"><button class="btn" data-act="pf-digest-test">${PI.mail}שליחת סיכום לבדיקה אליי</button></div>
+    </div></section>`;
+}
+async function specialAction(a, b){
+  if (a === "pf-sd-add") { SD.form = { day: addDays(TODAY, 1), kind:"off", deadline:"12:00", label:"" }; render(true); }
+  else if (a === "pf-sd-cancel") { SD.form = null; SD.confirm = null; render(true); }
+  else if (a === "pf-sd-kind") { SD.form.kind = b.dataset.k; render(true); }
+  else if (a === "pf-sd-save") {
+    const f = SD.form; if (!f.day) { toast("צריך לבחור תאריך."); return; }
+    try { await API.saveSpecial([{ day:f.day, kind:f.kind, deadline: f.kind==="short" ? (f.deadline||"12:00") : null, label:(f.label||"").trim() }]); SD.form = null; toast("היום נשמר."); }
+    catch(e) { toast(errMsg(e)); }
+    render(true);
+  }
+  else if (a === "pf-holidays") {
+    const list = israelHolidays(TODAY, 366).filter(h => !SPECIAL.has(h.day));
+    if (!list.length) { toast("כל החגים של השנה הקרובה כבר מסומנים."); return; }
+    b.disabled = true;
+    try { await API.saveSpecial(list.map(h => ({ day:h.day, kind:"off", deadline:null, label:h.label }))); toast(`נוספו ${list.length} ימי חג. אפשר להסיר כל יום שאינו מתאים.`); }
+    catch(e) { toast(errMsg(e)); }
+    b.disabled = false; render(true);
+  }
+  else if (a === "pf-sd-del") { SD.confirm = b.dataset.d; render(true); }
+  else if (a === "pf-sd-del-yes") { try { await API.removeSpecial(b.dataset.d); SD.confirm = null; toast("היום הוסר."); } catch(e) { toast(errMsg(e)); } render(true); }
+  else if (a === "pf-digest") {
+    const on = b.checked;
+    try { await API.setDigest(b.dataset.id, on); const x = (P.list||[]).find(m => m.id === b.dataset.id); if (x) x.digest = on; toast(on ? "יקבל סיכום בוקר." : "לא יקבל סיכום בוקר."); }
+    catch(e) { b.checked = !on; toast(errMsg(e)); }
+  }
+  else if (a === "pf-digest-test") {
+    b.disabled = true;
+    try { const r = await API.testSummary(); toast(r && r.sent ? `הסיכום נשלח אל ${r.to}.` : "השליחה לא הצליחה."); }
+    catch(e) { toast("סיכום הבוקר עוד לא הוגדר ב-Supabase (README, \"סיכום בוקר\")."); }
+    b.disabled = false;
+  }
   else return false;
   return true;
 }
@@ -624,8 +738,8 @@ function renderReporter(token){
   if (R.step === 0) {
     body = `<div class="eyebrow">${heLong(TODAY)}</div><h2>${greet}, ${esc(m.name.split(" ")[0])}</h2>
       <p class="lead">דיווח ההתייצבות של <b style="color:var(--ink);font-weight:600">${esc(m.track)}</b>, ${esc(siteOf(m))}. שלושה צעדים קצרים.</p>
-      <div class="statusline">${d.existing?`<span class="status good"><i></i>דיווחת היום ב-${d.existingAt}</span><span>אפשר לעדכן עד חצות.</span>`:`<span class="status ${nowHM()<DEADLINE?"muted":"crit"}"><i></i>${nowHM()<DEADLINE?"טרם דיווחת היום":"עבר מועד הדיווח"}</span><span>הדיווח נסגר ב-${DEADLINE}.</span>`}</div>
-      ${!isWork(TODAY)?`<div class="note">היום יום ${DAYS.at(dow(TODAY))}. בדרך כלל אין צורך בדיווח.</div>`:""}`;
+      <div class="statusline">${d.existing?`<span class="status good"><i></i>דיווחת היום ב-${d.existingAt}</span><span>אפשר לעדכן עד חצות.</span>`:`<span class="status ${nowHM()<dlFor(TODAY)?"muted":"crit"}"><i></i>${nowHM()<dlFor(TODAY)?"טרם דיווחת היום":"עבר מועד הדיווח"}</span><span>הדיווח נסגר ב-${dlFor(TODAY)}.</span>`}</div>
+      ${!isWork(TODAY)?`<div class="note">${specialOf(TODAY)?esc(specialOf(TODAY).label||"יום מיוחד")+": אין חובת דיווח היום.":`היום יום ${DAYS.at(dow(TODAY))}. בדרך כלל אין צורך בדיווח.`}</div>`:""}`;
     foot = `<button class="btn primary" data-act="rstep" data-n="1">${d.existing?"עדכון הדיווח":"התחלה"}</button>`;
   } else if (R.step === 1) {
     body = `<div class="eyebrow">שלב 1 מתוך 3</div><h2>סגל ומדריכים</h2><p class="lead">כמה אנשי סגל של המגמה נמצאים היום באתר, וכמה לא.</p>
@@ -681,6 +795,7 @@ document.addEventListener("input", e => {
   const t = e.target;
   if (t.dataset.bind && UI.mgrForm) UI.mgrForm[t.dataset.bind] = t.value;
   if (t.dataset.pbind && P.form) P.form[t.dataset.pbind] = t.value;
+  if (t.dataset.sbind && SD.form) SD.form[t.dataset.sbind] = t.value;
   if (t.dataset.abind && R.adding) { R.adding[t.dataset.abind] = t.value; if (t.dataset.abind === "start" && R.adding.end < t.value) { R.adding.end = t.value; render(true); } }
   if (t.dataset.step) setVal(t.dataset.step, clampInt(t.value), false);
 });
@@ -706,6 +821,7 @@ document.addEventListener("click", async e => {
   const a = b.dataset.act;
   if (a === "menu") { UI.menu = UI.menu === b.dataset.id ? null : b.dataset.id; UI.confirmDel = null; render(true); return; }
   if (UI.menu) UI.menu = null;
+  if (a.startsWith("pf-") && await specialAction(a, b)) return;
   if (a.startsWith("perm-") || a.startsWith("pf-")) { await permAction(a, b); return; }
   if (a === "tab") { if (b.dataset.t === "perms") P.list = null; P.form = null; UI.tab = b.dataset.t; UI.mgrForm = null; UI.editId = null; UI.confirmDel = null; render(true); window.scrollTo({top:0}); }
   else if (a === "site") { UI.site = b.dataset.s; render(true); }
