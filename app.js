@@ -621,6 +621,7 @@ document.addEventListener("click", async e => {
   else if (a === "pick") { location.hash = "report-" + b.dataset.token; }
   else if (a === "logout") { await sb.auth.signOut(); lsSet("unit-token", null); TOKEN = ""; location.href = location.pathname; }
   else if (a === "login") { await doLogin(b); }
+  else if (a === "login-pass") { await doPassLogin(b); }
   else if (a === "forget-token") { lsSet("unit-token", null); TOKEN = ""; history.replaceState(null, "", location.pathname); S.err = ""; render(true); }
   else if (a === "inc") { const k = b.dataset.k; setVal(k, Math.max(0, getVal(k) + (+b.dataset.n)), true); }
   else if (a === "rstep") { R.step = Math.max(0, Math.min(3, R.step + (+b.dataset.n))); render(true); window.scrollTo({top:0}); }
@@ -662,8 +663,10 @@ function renderLogin(){
       :`<p class="lead">מנהלי מגמות נכנסים דרך הקישור האישי שקיבלו.</p>`}
     <form class="login-form" onsubmit="return false">
       <label for="login-email">כניסת מנהל מערכת</label>
-      <input id="login-email" type="email" dir="ltr" autocomplete="email" placeholder="name@example.com">
-      <button class="btn primary" data-act="login">שליחת קישור כניסה למייל</button>
+      <input id="login-email" type="email" dir="ltr" autocomplete="username" placeholder="name@example.com">
+      <input id="login-pass" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה">
+      <button class="btn primary" data-act="login-pass">כניסה</button>
+      <button class="btn link" data-act="login">אין לי סיסמה: שליחת קישור כניסה למייל</button>
     </form>
   </div></div>`;
 }
@@ -673,7 +676,17 @@ async function doLogin(b){
   b.disabled = true;
   const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
   b.disabled = false;
-  toast(error ? "השליחה נכשלה. נסו שוב בעוד דקה." : "נשלח קישור כניסה למייל. פתחו אותו במכשיר הזה.");
+  if (!error) { toast("נשלח קישור כניסה למייל. פתחו אותו במכשיר הזה."); return; }
+  const m = (error.message || "") + " " + (error.status || "");
+  toast(/rate|429|seconds/i.test(m) ? "נשלחו יותר מדי מיילים בזמן קצר. היכנסו עם סיסמה, או נסו שוב בעוד שעה." : "השליחה נכשלה: " + (error.message || "שגיאה לא ידועה"));
+}
+async function doPassLogin(b){
+  const email = (document.getElementById("login-email")?.value || "").trim(), pass = document.getElementById("login-pass")?.value || "";
+  if (!email || !pass) { toast("צריך למלא מייל וסיסמה."); return; }
+  b.disabled = true;
+  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+  b.disabled = false;
+  if (error) toast(/invalid/i.test(error.message || "") ? "המייל או הסיסמה שגויים." : "הכניסה נכשלה: " + error.message);
 }
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
 if (S.role === "unit" || TOKEN) UI.tab = "status";

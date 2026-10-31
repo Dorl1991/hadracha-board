@@ -383,5 +383,6 @@ button.place:hover{border-color:var(--line-2);box-shadow:0 4px 16px -8px rgba(60
 .login-form input{border:1px solid var(--line-2);background:var(--surface);border-radius:10px;padding:11px 12px;width:100%;font-size:15px}
 .login-form input:focus{border-color:var(--ink);outline:none}
 .login-form .btn{height:46px;font-size:15px}
+.login-form .btn.link{height:auto;font-size:13px;color:var(--muted);white-space:normal;justify-content:center}
 /* the viewer's own unit card */
 .ucard.mine{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand) inset}
