@@ -1,5 +1,5 @@
 -- =====================================================================
--- שדרוגים: ימים מיוחדים (חגים / ימים מקוצרים) ונמעני סיכום הבוקר.
+-- שדרוגים: ימים מיוחדים (חגים / ימים מקוצרים).
 -- הריצו פעם אחת אחרי 03_permissions.sql. בטוח להריץ שוב.
 -- =====================================================================
 
@@ -18,32 +18,6 @@ drop policy if exists admin_all on public.special_days;
 create policy admin_all on public.special_days for all to authenticated using (public.is_admin()) with check (public.is_admin());
 drop trigger if exists special_days_pulse on public.special_days;
 create trigger special_days_pulse after insert or update or delete on public.special_days for each statement execute function public.touch_pulse();
-
--- מי מקבל את סיכום הבוקר במייל
-alter table public.members add column if not exists digest boolean not null default false;
-
-create or replace function public.set_member_digest(p_id uuid, p_on boolean)
-returns boolean language plpgsql security definer set search_path = public as $$
-begin
-  if not public.is_admin() then raise exception 'not_authorized' using errcode = '42501'; end if;
-  update public.members set digest = coalesce(p_on, false) where id = p_id and email is not null and active;
-  return found;
-end $$;
-grant execute on function public.set_member_digest(uuid, boolean) to authenticated;
-
-create or replace function public.list_members()
-returns jsonb language plpgsql stable security definer set search_path = public as $$
-begin
-  if not public.is_admin() then raise exception 'not_authorized' using errcode = '42501'; end if;
-  return (
-    select coalesce(jsonb_agg(jsonb_build_object(
-      'id', m.id, 'name', m.name, 'role', m.role, 'email', m.email, 'token', m.token,
-      'created_at', m.created_at, 'digest', m.digest,
-      'has_account', exists (select 1 from auth.users u where lower(u.email) = m.email and u.email_confirmed_at is not null),
-      'is_me', m.email is not null and m.email = public.my_email()
-    ) order by case m.role when 'admin' then 0 when 'editor' then 1 else 2 end, m.created_at), '[]'::jsonb)
-    from public.members m where m.active);
-end $$;
 
 -- הלוח מקבל גם את רשימת הימים המיוחדים
 create or replace function public.board_data(p_token text, p_from date, p_to date)

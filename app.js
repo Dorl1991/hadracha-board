@@ -164,8 +164,6 @@ async function boot(){
     async removeMember(id){ const { error } = await sb.rpc("remove_member", { p_id:id }); if (error) throw error; },
     async saveSpecial(rows){ const { error } = await sb.from("special_days").upsert(rows); if (error) throw error; await refresh(); },
     async removeSpecial(day){ const { error } = await sb.from("special_days").delete().eq("day", day); if (error) throw error; await refresh(); },
-    async setDigest(id, on){ const { error } = await sb.rpc("set_member_digest", { p_id:id, p_on:on }); if (error) throw error; },
-    async testSummary(){ const { data, error } = await sb.functions.invoke("daily-summary", { body:{ test:true } }); if (error) throw error; return data; },
     async signUp(email, password){ const { data, error } = await sb.auth.signUp({ email, password, options:{ emailRedirectTo: location.origin + location.pathname } }); if (error) throw error; return data; }
   };
   refresh();
@@ -190,8 +188,6 @@ function startLocal(){
     async removeMember(id){ const i = LM.findIndex(m => m.id === id); if (i >= 0) LM.splice(i, 1); },
     async saveSpecial(rows){ rows.forEach(r => SPECIAL.set(r.day, {kind:r.kind, deadline:r.deadline, label:r.label})); render(true); },
     async removeSpecial(day){ SPECIAL.delete(day); render(true); },
-    async setDigest(id, on){ const x = LM.find(m => m.id === id); if (x) x.digest = on; },
-    async testSummary(){ throw new Error("local"); },
     async signUp(){ throw new Error("local"); }
   };
   render(true);
@@ -509,8 +505,7 @@ const PI = {
   shield: mi('<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6z"/>'),
   pen: mi('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
   refresh: mi('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
-  cal: mi('<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
-  mail: mi('<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>')
+  cal: mi('<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>')
 };
 const roleIcon = r => r === "admin" ? PI.shield : r === "editor" ? PI.pen : PI.eye;
 function memberRow(x){
@@ -566,7 +561,6 @@ function renderPerms(){
     <div class="sec-h"><h2><span class="h-ic r-${r}">${roleIcon(r)}</span>${ROLE_INFO[r].plural}</h2><span class="meta">${ROLE_INFO[r].desc}</span></div>
     <div class="card mem-list">${by(r).map(memberRow).join("") || `<div class="empty">אין ${ROLE_INFO[r].plural} עדיין.</div>`}</div>
   </section>`).join("")}
-  ${summarySectionHTML()}
   ${specialSectionHTML()}
   <section class="sec"><div class="sec-h"><h2><span class="h-ic r-unit">${MI.send}</span>מנהלי מגמות</h2><span class="meta">כל מנהל מגמה מדווח רק על המגמה שלו</span></div>
     <div class="card" style="padding:14px 18px;font-size:13.5px;color:var(--ink-2)">את הקישור האישי של מנהל מגמה שולחים מהכרטיס שלה בלשונית <button class="btn link" style="display:inline;padding:0 2px;color:var(--brand)" data-act="tab" data-t="status">דיווחי מגמות</button> (⋮ ← וואטסאפ).</div></section>`;
@@ -603,7 +597,7 @@ async function permAction(a, b){
   return true;
 }
 
-/* ---------- special days & morning summary (system admins) ---------- */
+/* ---------- special days (system admins) ---------- */
 function israelHolidays(fromIso, days){
   const f = new Intl.DateTimeFormat("en-u-ca-hebrew", { timeZone:"UTC", day:"numeric", month:"long" });
   const heb = iso => { const p = f.formatToParts(new Date(iso + "T12:00:00Z")); return { m: p.find(x => x.type === "month").value, d: Number(p.find(x => x.type === "day").value) }; };
@@ -631,7 +625,7 @@ function specialSectionHTML(){
   const upcoming = [...SPECIAL.entries()].filter(([d]) => d >= TODAY).sort(([a],[b]) => a < b ? -1 : 1);
   const f = SD.form;
   return `<section class="sec">
-    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.cal}</span>ימים מיוחדים</h2><span class="meta">חגים וימים מקוצרים. ביום חג אין חובת דיווח ואין התראות.</span></div>
+    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.cal}</span>ימים מיוחדים</h2><span class="meta">חגים וימים מקוצרים. ביום חג אין חובת דיווח.</span></div>
     <div class="card mem-list">
       <div class="sd-tools">
         <button class="btn" data-act="pf-holidays">${PI.cal}הוספת חגי ישראל לשנה הקרובה</button>
@@ -650,20 +644,6 @@ function specialSectionHTML(){
         <div class="mem-st"><span class="ustate ${x.kind==="off"?"crit":"warn"}"><i></i>${x.kind==="off"?"אין דיווח":`נסגר ב-${x.deadline}`}</span></div>
         <div class="mem-acts">${SD.confirm===d?`<button class="btn sm danger-solid" data-act="pf-sd-del-yes" data-d="${d}">הסרה</button><button class="btn sm" data-act="pf-sd-cancel">ביטול</button>`:`<button class="btn link danger" data-act="pf-sd-del" data-d="${d}">${MI.trash}הסרה</button>`}</div>
       </div>`).join("") || `<div class="empty">אין ימים מיוחדים קרובים.</div>`}
-    </div></section>`;
-}
-function summarySectionHTML(){
-  const rec = (P.list||[]).filter(x => x.email);
-  return `<section class="sec">
-    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.mail}</span>סיכום בוקר במייל</h2><span class="meta">נשלח בימי עבודה בשעה 10:15: כמה אנשים באתרים ומי לא דיווח.</span></div>
-    <div class="card mem-list">
-      ${rec.map(x => `<label class="mem sw-row">
-        <span class="mem-ic r-${x.role}">${PI.user}</span>
-        <div class="mem-main"><b>${esc(x.name || x.email)}</b><span dir="ltr" style="text-align:right">${esc(x.email)}</span></div>
-        <span></span>
-        <span class="switch"><input type="checkbox" data-act="pf-digest" data-id="${x.id}" ${x.digest?"checked":""} aria-label="סיכום בוקר ל${esc(x.name || x.email)}"><i></i></span>
-      </label>`).join("") || `<div class="empty">אפשר לשלוח סיכום רק למי שנכנס עם מייל. הוסיפו הרשאה עם מייל למעלה.</div>`}
-      <div class="sd-tools"><button class="btn" data-act="pf-digest-test">${PI.mail}שליחת סיכום לבדיקה אליי</button></div>
     </div></section>`;
 }
 async function specialAction(a, b){
@@ -686,17 +666,6 @@ async function specialAction(a, b){
   }
   else if (a === "pf-sd-del") { SD.confirm = b.dataset.d; render(true); }
   else if (a === "pf-sd-del-yes") { try { await API.removeSpecial(b.dataset.d); SD.confirm = null; toast("היום הוסר."); } catch(e) { toast(errMsg(e)); } render(true); }
-  else if (a === "pf-digest") {
-    const on = b.checked;
-    try { await API.setDigest(b.dataset.id, on); const x = (P.list||[]).find(m => m.id === b.dataset.id); if (x) x.digest = on; toast(on ? "יקבל סיכום בוקר." : "לא יקבל סיכום בוקר."); }
-    catch(e) { b.checked = !on; toast(errMsg(e)); }
-  }
-  else if (a === "pf-digest-test") {
-    b.disabled = true;
-    try { const r = await API.testSummary(); toast(r && r.sent ? `הסיכום נשלח אל ${r.to}.` : "השליחה לא הצליחה."); }
-    catch(e) { toast("סיכום הבוקר עוד לא הוגדר ב-Supabase (README, \"סיכום בוקר\")."); }
-    b.disabled = false;
-  }
   else return false;
   return true;
 }
