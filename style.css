@@ -45,6 +45,11 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .mast-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px 28px;padding-block:14px 0}
 .mark{display:flex;align-items:center;gap:12px;min-width:0}
 .mark svg{width:34px;height:34px;flex:none}
+.logo{display:block;flex:none;object-fit:contain}
+.mark .logo{width:58px;height:58px;margin-block:-6px}
+.rep-top .logo{width:46px;height:46px}
+.login-mark .logo{width:112px;height:112px;margin-inline:auto}
+@media (max-width:520px){.mark .logo{width:48px;height:48px}}
 .mark .t1{font-size:11.5px;letter-spacing:.08em;color:var(--muted);font-weight:500}
 .mark .t2{font-family:var(--serif);font-weight:600;font-size:21px;line-height:1.15}
 .mast-tools{margin-inline-start:auto;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}

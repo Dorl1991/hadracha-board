@@ -52,7 +52,7 @@ function waLink(m){
 }
 async function copyText(t, msg){ try{ await navigator.clipboard.writeText(t); toast(msg || "הקישור הועתק"); }catch(e){ toast("לא ניתן להעתיק אוטומטית: " + t); } }
 
-const EMBLEM = `<svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--brand)" stroke-width="1.2"/><path d="M17 8.5c1.6 3.1 5 4.9 5 9.2a5 5 0 0 1-10 0c0-2 1.1-3.4 2.2-4.4.2 1.5 1 2.4 2.1 2.9-.4-2.6-.2-5.4.7-7.7z" fill="none" stroke="var(--brand)" stroke-width="1.2" stroke-linejoin="round"/><path d="M11 25.5h12" stroke="var(--brand)" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+const EMBLEM = `<img class="logo" src="icons/logo.png" alt="כבאות והצלה לישראל · אגף הדרכה" width="256" height="256">`;
 
 /*GEN-START*/
 function genDemo(T){

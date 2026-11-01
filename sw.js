@@ -1,5 +1,5 @@
 // Service worker: אפליקציה במסך הבית ועבודה בסיסית בלי רשת.
-const CACHE = "hadracha-v3";
+const CACHE = "hadracha-v4";
 const SHELL = ["./", "./index.html", "./style.css", "./app.js", "./config.js", "./manifest.webmanifest", "./icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
