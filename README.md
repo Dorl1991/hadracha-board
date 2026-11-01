@@ -44,7 +44,7 @@ npx serve .
 > מפתח ה-anon מיועד להיות ציבורי. ההגנה על הנתונים היא בהרשאות שבמסד הנתונים. **לעולם אל תשימו בקובץ את מפתח ה-`service_role`.**
 
 ### 4. יצירת הטבלאות
-ב-Supabase: **SQL Editor ← New query**. מריצים לפי הסדר: `sql/01_schema.sql`, `sql/02_seed.sql`, `sql/03_permissions.sql`, `sql/04_upgrades.sql`.
+ב-Supabase: **SQL Editor ← New query**. מריצים לפי הסדר: `sql/01_schema.sql`, `sql/02_seed.sql`, `sql/03_permissions.sql`, `sql/04_upgrades.sql`, `sql/05_advance_reports.sql`.
 
 ### 5. העלאה ל-GitHub והפעלת האתר
 עם Claude Code (או ידנית):
@@ -112,3 +112,9 @@ select id, email from auth.users where email = 'המייל-שלו@example.com';
 - **שינוי שעת הדיווח:** `DEADLINE` ב-`config.js`.
 - **תזכורת למנהל שלא דיווח:** בכרטיס המגמה ⋮ ← **תזכורת בוואטסאפ**.
 - **לפני שימוש מבצעי:** לוודא מול אבטחת המידע שמותר לשמור את הנתונים בענן חיצוני, ושרשת הארגון לא חוסמת את `github.io` ו-`supabase.co`.
+
+## תכונות מושבתות זמנית
+
+ב-`config.js`:
+- `STAFF_OUT: false`: שדה "סגל מחוץ לאתר" לא מופיע בדיווח ובלוח. כדי להחזיר, משנים ל-`true`.
+- `HIDDEN_UNITS: ["מטה"]`: מגמות מוסתרות. כדי להחזיר מגמה, מוציאים את השם שלה מהרשימה (`[]` מחזיר את כולן).

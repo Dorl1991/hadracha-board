@@ -6,6 +6,9 @@ window.APP_CONFIG = {
   SUPABASE_ANON_KEY: "sb_publishable_UB1RLrW96qmL-yhfDyxMJg_GgdFGfuW",    // Project Settings ← API ← anon public
   DEADLINE: "10:00",         // שעת סגירת הדיווח היומי
   DEFAULT_SITE: "המכללה הארצית",
+  // תכונות מושבתות זמנית. כדי להחזיר: STAFF_OUT: true, ולהוציא את "מטה" מהרשימה.
+  STAFF_OUT: false,          // דיווח "סגל מחוץ לאתר"
+  HIDDEN_UNITS: ["מטה"],     // מגמות שמוסתרות מהלוח ומהדיווח
   ORG_TITLE: "כבאות והצלה",
   BOARD_TITLE: "אגף הדרכה · לוח התייצבות"
 };
