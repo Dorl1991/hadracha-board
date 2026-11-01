@@ -12,6 +12,7 @@ const FEATURES = {
 };
 const isHiddenUnit = m => FEATURES.HIDDEN_UNITS.includes(String((m && m.track) || "").trim());
 const REPORT_AHEAD = 7;   // כמה ימים קדימה אפשר לדווח
+const L_ORG = "חניכים מכב״ה", L_EXT = "חניכים לא מכב״ה";
 
 /* ---------- dates ---------- */
 const isoInTZ = d => new Intl.DateTimeFormat("en-CA",{timeZone:TZ,year:"numeric",month:"2-digit",day:"2-digit"}).format(d);
@@ -79,7 +80,7 @@ function genDemo(T){
     "c-ft2": {name:"יום עיון – מערכות כיבוי אוטומטיות", mid:"m-ft", start:W(-5), end:W(-5), org:4, ext:26},
     "c-in1": {name:"הכשרת צוותי חירום במפעלים", mid:"m-in", start:W(-1), end:W(0), org:0, ext:12}
   };
-  for (const c of Object.values(courses)) { c.cancelled = false; c.example = true; }
+  for (const c of Object.values(courses)) { c.cancelled = false; c.example = true; c.staff = Math.max(1, Math.round((c.org + c.ext) / 8)); }
   const reports = {};
   const todayReported = {"m-hz":"07:52","m-rs":"08:15","m-bs":"08:31","m-in":"09:06","m-n1":"08:05"};
   for(let k=-9;k<=0;k++){
@@ -93,7 +94,7 @@ function genDemo(T){
       const counts = {}; let any = false;
       for(const [cid,c] of Object.entries(courses)){
         if(c.mid!==mid || c.start>D || c.end<D) continue; any = true;
-        counts[cid] = {org: Math.max(0, c.org - ri(0,2)), ext: Math.max(0, c.ext - (c.ext ? ri(0,1) : 0))};
+        counts[cid] = {org: Math.max(0, c.org - ri(0,2)), ext: Math.max(0, c.ext - (c.ext ? ri(0,1) : 0)), staff: c.staff};
       }
       reports[D+"_"+mid] = {date:D, mid, staffIn: m.base + ri(-2,2), staffOut: ri(0,4), noCourse: !any, counts, at: D+"T"+at+":00"+tz, example:true};
     }
@@ -118,7 +119,7 @@ function applyBoard(d){
   S.role = d.role; S.me = d.me || null; S.email = d.email || "";
   SPECIAL.clear(); (d.special||[]).forEach(x => SPECIAL.set(x.day, {kind:x.kind, deadline:x.deadline||null, label:x.label||""}));
   S.managers = new Map((d.units||[]).map(u => [u.id, {name:u.manager_name||"", track:u.name, phone:u.phone||"", site:u.site||DEFAULT_SITE, token:u.token||"", active:u.active!==false}]));
-  S.courses = new Map((d.courses||[]).map(c => [c.id, {name:c.name, mid:c.unit_id, start:c.start_date, end:c.end_date, org:c.org, ext:c.ext, cancelled:false}]));
+  S.courses = new Map((d.courses||[]).map(c => [c.id, {name:c.name, mid:c.unit_id, start:c.start_date, end:c.end_date, org:c.org, ext:c.ext, staff:c.staff||0, cancelled:false}]));
   S.reports = new Map((d.reports||[]).map(r => [r.report_date+"_"+r.unit_id, {date:r.report_date, mid:r.unit_id, staffIn:r.staff_in, staffOut:r.staff_out, noCourse:r.no_course, counts:r.counts||{}, at:r.reported_at, carried:r.carried_from||null}]));
   ["managers","courses","reports"].forEach(c => S.got.add(c));
 }
@@ -162,8 +163,11 @@ async function boot(){
   setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 30000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
   API = {
-    async submitReport(mid, date, staffIn, staffOut, counts){ const { error } = await sb.rpc("submit_report", { p_token: TOKEN || null, p_unit: mid, p_staff_in: staffIn, p_staff_out: staffOut, p_counts: counts, p_date: date }); if (error) throw error; await refresh(); },
-    async addCourse(mid, x){ const { data, error } = await sb.rpc("add_course", { p_token: TOKEN || null, p_unit: mid, p_name: x.name, p_start: x.start, p_end: x.end, p_org: x.org||0, p_ext: x.ext||0 }); if (error) throw error; await refresh(); return data; },
+    async submitReports(mid, dates, staffIn, staffOut, counts){
+      for (const date of dates.slice().sort()) { const { error } = await sb.rpc("submit_report", { p_token: TOKEN || null, p_unit: mid, p_staff_in: staffIn, p_staff_out: staffOut, p_counts: counts, p_date: date }); if (error) { await refresh(); throw error; } }
+      await refresh(); },
+    async removeCourse(id){ const { error } = await sb.from("courses").update({ cancelled:true }).eq("id", id); if (error) throw error; await refresh(); },
+    async addCourse(mid, x){ const { data, error } = await sb.rpc("add_course", { p_token: TOKEN || null, p_unit: mid, p_name: x.name, p_start: x.start, p_end: x.end, p_org: x.org||0, p_ext: x.ext||0, p_staff: x.staff||0 }); if (error) throw error; await refresh(); return data; },
     async saveUnit(id, f){ const row = { name:f.track, manager_name:f.name, phone:f.phone||"", site:f.site||DEFAULT_SITE };
       if (f.newToken) row.token = randToken();
       const q = id ? sb.from("units").update(row).eq("id", id) : sb.from("units").insert({ ...row, sort_order: S.managers.size + 1 });
@@ -183,20 +187,23 @@ const LM = [{ id:"p-me", name:"", role:"admin", email:"you@example.com", token:n
 function startLocal(){
   S.mode = "local"; S.role = "admin";
   let saved = null;
-  try { saved = JSON.parse(lsGet("division-demo-v3") || "null"); } catch(e) {}
+  try { saved = JSON.parse(lsGet("division-demo-v4") || "null"); } catch(e) {}
   const base = saved || genDemo(TODAY);
   for (const c of ["managers","courses","reports"]) { S[c] = new Map(Object.entries(base[c] || {})); S.got.add(c); }
-  const persist = () => lsSet("division-demo-v3", JSON.stringify({managers:Object.fromEntries(S.managers),courses:Object.fromEntries(S.courses),reports:Object.fromEntries(S.reports)}));
+  const persist = () => lsSet("division-demo-v4", JSON.stringify({managers:Object.fromEntries(S.managers),courses:Object.fromEntries(S.courses),reports:Object.fromEntries(S.reports)}));
   const done = () => { persist(); render(true); };
   API = {
-    async submitReport(mid, date, staffIn, staffOut, counts){
+    async submitReports(mid, dates, staffIn, staffOut, counts){
       const now = new Date().toISOString();
       const put = (D, from) => { const id = D+"_"+mid, prev = S.reports.get(id), cnt = countsFor(mid, D, counts); S.reports.set(id, {date:D, mid, staffIn, staffOut, noCourse:!Object.keys(cnt).length, counts:cnt, carried:from||null, at: !from && prev && !prev.carried ? prev.at : now}); };
-      put(date, null);
-      const until = carryUntil(mid, date);
-      for (let D = addDays(date, 1); until && D <= until; D = addDays(D, 1)) { if (!isWork(D)) continue; const r = S.reports.get(D+"_"+mid); if (r && !r.carried) break; put(D, date); }
+      for (const date of dates.slice().sort()) {
+        put(date, null);
+        const until = carryUntil(mid, date);
+        for (let D = addDays(date, 1); until && D <= until; D = addDays(D, 1)) { if (!isWork(D)) continue; const r = S.reports.get(D+"_"+mid); if (r && !r.carried) break; put(D, date); }
+      }
       done(); },
-    async addCourse(mid, x){ const id = "c-"+rid(6); S.courses.set(id, {name:x.name, mid, start:x.start, end:x.end, org:x.org||0, ext:x.ext||0, cancelled:false}); done(); return id; },
+    async removeCourse(id){ const c = S.courses.get(id); if (c) S.courses.set(id, {...c, cancelled:true}); done(); },
+    async addCourse(mid, x){ const id = "c-"+rid(6); S.courses.set(id, {name:x.name, mid, start:x.start, end:x.end, org:x.org||0, ext:x.ext||0, staff:x.staff||0, cancelled:false}); done(); return id; },
     async saveUnit(id, f){ const old = id ? S.managers.get(id) : {token:rid(6), active:true}; S.managers.set(id || "m-"+rid(6), {...old, name:f.name, track:f.track, phone:f.phone||"", site:f.site||DEFAULT_SITE, ...(f.newToken?{token:rid(6)}:{})}); done(); },
     async removeUnit(id){ const m = S.managers.get(id); if (m) S.managers.set(id, {...m, active:false}); done(); },
     async listMembers(){ return LM.map(x => ({...x})); },
@@ -217,23 +224,25 @@ const canReport = mid => canAdmin() || S.role === "editor" || (S.role === "unit"
 function activeManagers(site){ return [...S.managers.entries()].filter(([,m]) => m.active !== false && !isHiddenUnit(m) && (!site || site === "all" || siteOf(m) === site)).map(([id,m]) => ({id, ...m, site: siteOf(m)})); }
 function allSites(){ const s = new Set(); for (const m of S.managers.values()) if (m.active !== false && !isHiddenUnit(m)) s.add(siteOf(m)); return [...(s.has(DEFAULT_SITE)?[DEFAULT_SITE]:[]), ...[...s].filter(x=>x!==DEFAULT_SITE).sort((a,b)=>a.localeCompare(b,"he"))]; }
 function reportsOn(D){ const by = {}; for (const r of S.reports.values()) if (r.date === D) by[r.mid] = r; return by; }
+const uTot = u => u.staffIn + (u.cstaff||0) + u.org + u.ext;
 function dayStats(D, site){
   const mgrs = activeManagers(site), reps = reportsOn(D), mids = new Set(mgrs.map(m=>m.id));
   let staffIn = 0, staffOut = 0, org = 0, ext = 0;
-  const units = mgrs.map(m => ({m, rep: reps[m.id], staffIn:0, staffOut:0, org:0, ext:0, planned:0}));
+  let cstaff = 0;
+  const units = mgrs.map(m => ({m, rep: reps[m.id], staffIn:0, staffOut:0, cstaff:0, org:0, ext:0, planned:0}));
   const byMid = Object.fromEntries(units.map(u => [u.m.id, u]));
   for (const u of units) if (u.rep) { u.staffIn = u.rep.staffIn||0; u.staffOut = u.rep.staffOut||0; staffIn += u.staffIn; staffOut += u.staffOut; }
   const courses = [...S.courses.entries()].filter(([,c]) => !c.cancelled && c.start <= D && c.end >= D && mids.has(c.mid)).map(([id,c]) => {
     const rep = reps[c.mid]; const cnt = rep && rep.counts && rep.counts[id];
-    const o = cnt ? cnt.org||0 : c.org||0, e = cnt ? cnt.ext||0 : c.ext||0;
-    org += o; ext += e;
-    const u = byMid[c.mid]; if (u) { if (cnt) { u.org += o; u.ext += e; } else u.planned += o + e; }
+    const o = cnt ? cnt.org||0 : c.org||0, e = cnt ? cnt.ext||0 : c.ext||0, sf = cnt ? (cnt.staff ?? c.staff ?? 0) : (c.staff||0);
+    org += o; ext += e; cstaff += sf;
+    const u = byMid[c.mid]; if (u) { if (cnt) { u.org += o; u.ext += e; u.cstaff += sf; } else u.planned += o + e + sf; }
     const all = workdaysBetween(c.start, c.end);
     const m = S.managers.get(c.mid) || {};
-    return {id, ...c, o, e, confirmed: !!cnt, dayN: all.indexOf(D) + 1, dayT: all.length, track: m.track || "—", site: siteOf(m)};
+    return {id, ...c, o, e, sf, confirmed: !!cnt, dayN: all.indexOf(D) + 1, dayT: all.length, track: m.track || "—", site: siteOf(m)};
   });
   const reported = units.filter(u => u.rep).length;
-  return {D, units, staffIn, staffOut, org, ext, trainees: org+ext, onSite: staffIn + org + ext, courses, reported, total: units.length};
+  return {D, units, staffIn, staffOut, cstaff, staff: staffIn + cstaff, org, ext, trainees: org+ext, onSite: staffIn + cstaff + org + ext, courses, reported, total: units.length};
 }
 function repStatus(rep, D){
   if (rep && rep.carried) return {cls:"good", txt:`המשך אוטומטי מהדיווח של ${heShort(rep.carried)}`, time:"המשך", carried:true};
@@ -260,7 +269,7 @@ function render(force){
   afterRender();
 }
 document.addEventListener("focusout", () => setTimeout(() => { if (pendingRender) render(); }, 0));
-window.addEventListener("hashchange", () => { R.draft = null; R.step = 0; R.adding = null; R.date = R.pendingDate || null; R.pendingDate = null; window.scrollTo(0,0); render(true); });
+window.addEventListener("hashchange", () => { R.draft = null; R.step = 0; R.adding = null; R.dates = R.pendingDate ? [R.pendingDate] : null; R.pendingDate = null; window.scrollTo(0,0); render(true); });
 setInterval(() => { if (!location.hash.startsWith("#report")) render(); }, 60000);
 
 /* ---------- dashboard ---------- */
@@ -311,7 +320,7 @@ const FLAME_WM = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" s
 const HEX_OUT = "56,4 106,33 106,91 56,120 6,91 6,33", HEX_IN = "56,12 99,37 99,87 56,112 13,87 13,37";
 
 function hexCell(u, mx, multi){
-  const m = u.m, rep = u.rep, s = repStatus(rep, UI.date), n = u.staffIn + u.org + u.ext;
+  const m = u.m, rep = u.rep, s = repStatus(rep, UI.date), n = uTot(u);
   const name = esc((m.track || "").replace(/^מגמת\s+/, ""));
   const st = rep ? (s.late ? "late" : "on") : (s.cls === "crit" ? "miss" : "off");
   const chip = rep ? (s.time || "דווח") : s.cls === "crit" ? "לא דווח" : s.wait ? "ממתין" : s.future ? "טרם דווח" : "—";
@@ -336,7 +345,7 @@ function renderOverview(st){
   const fig = (k, v) => `<div class="fire-fig"><b>${fmt(v)}</b><span>${k}</span></div>`;
   const units = st.units.slice();
   const bal = mx => Math.max(1, Math.ceil(units.length / Math.ceil(units.length / mx)));
-  const mx = Math.max(0, ...units.filter(u => u.rep).map(u => u.staffIn + u.org + u.ext));
+  const mx = Math.max(0, ...units.filter(u => u.rep).map(uTot));
   const rule = !st.total ? "" : !isWork(UI.date) ? `<div class="fire-rule"><span>אין חובת דיווח ביום הזה</span></div>`
     : `<div class="fire-rule"><button class="fire-rep ${missing.length&&after?"alarm":""}" data-act="tab" data-t="status"><i></i><b>${st.reported} מתוך ${st.total}</b> מגמות דיווחו</button>${missing.length?`<span class="${after?"crit":""}">${UI.date>TODAY?"טרם דווחו":after?"חסר דיווח":"ממתינים"}: ${missing.map(u=>esc(u.m.track.replace(/^מגמת\s+/,""))).join(" · ")}</span>`:`<span>כל המגמות דיווחו</span>`}</div>`;
 
@@ -345,7 +354,7 @@ function renderOverview(st){
     <div class="fire-head">
       <div class="fire-main"><div class="fire-top">${kicker}</div><div class="fire-num">${fmt(st.onSite)}</div></div>
       <div class="fire-unit">משתתפים ${scope}</div>
-      <div class="fire-row">${fig("סגל",st.staffIn)}${fig("חניכי הארגון",st.org)}${fig("מחוץ לארגון",st.ext)}${fig("השתלמויות",st.courses.length)}</div>
+      <div class="fire-row">${fig("סגל",st.staff)}${fig(L_ORG,st.org)}${fig(L_EXT,st.ext)}${fig("השתלמויות",st.courses.length)}</div>
     </div>
     ${units.length?`<div class="hrow" style="--c-lg:${bal(8)};--c-md:${bal(5)};--c-sm:${bal(3)};--c-xs:${bal(2)}">${units.map(u => hexCell(u, mx, multi)).join("")}</div>`:`<div class="hempty">לא הוגדרו מגמות.</div>`}
     ${rule}
@@ -355,13 +364,13 @@ function renderOverview(st){
   let placesSec = "";
   if (UI.site === "all" && Object.keys(bySite).length > 1) {
     const places = Object.entries(bySite).map(([s,us]) => {
-      const n = us.reduce((a,u)=>a+u.staffIn+u.org+u.ext,0), r = us.filter(u=>u.rep).length;
+      const n = us.reduce((a,u)=>a+uTot(u),0), r = us.filter(u=>u.rep).length;
       return `<button class="place" data-act="site" data-s="${esc(s)}"><span class="pn">${esc(s)}</span><b>${fmt(n)}</b><span class="ps ${r<us.length&&after?"alarm":""}">${r}/${us.length} דיווחו</span></button>`;
     }).join("");
     placesSec = `<section class="sec"><div class="sec-h"><h2>לפי אתר</h2></div><div class="places">${places}</div></section>`;
   }
 
-  const courses = st.courses.slice().sort((a,b)=>(b.o+b.e)-(a.o+a.e)).map(c => `<div class="crow"><div class="cn"><span>${esc(c.name)}</span><small>${multi?esc(c.site):esc(c.track)}</small></div><span class="cd">${c.dayT>1?`יום ${c.dayN}/${c.dayT}`:"יום אחד"}</span><b>${fmt(c.o+c.e)}</b></div>`).join("");
+  const courses = st.courses.slice().sort((a,b)=>(b.o+b.e+b.sf)-(a.o+a.e+a.sf)).map(c => `<div class="crow"><div class="cn"><span>${esc(c.name)}</span><small>${multi?esc(c.site):esc(c.track)} · סגל ${fmt(c.sf)} · מכב״ה ${fmt(c.o)} · לא מכב״ה ${fmt(c.e)}</small></div><span class="cd">${c.dayT>1?`יום ${c.dayN}/${c.dayT}`:"יום אחד"}</span><b>${fmt(c.o+c.e+c.sf)}</b></div>`).join("");
   const coursesSec = `<section class="sec"><div class="sec-h"><h2>השתלמויות היום</h2></div><div class="card clist ${st.courses.length>1?"cols2":""}">${courses || `<div class="empty">אין השתלמויות פעילות.</div>`}</div></section>`;
 
   return hero + placesSec + coursesSec;
@@ -413,7 +422,7 @@ function mgrFormHTML(f, isEdit){
 function unitCard(u, D, admin, withMenu = true){
   const m = u.m, rep = u.rep, s = repStatus(rep, D);
   if (withMenu && UI.editId === m.id) return `<article class="ucard editing"><div class="uc-top"><span class="uicon">${uIcon(m.track)}</span><h3 style="margin:0">עריכת ${esc(m.track)}</h3></div>${mgrFormHTML(UI.mgrForm, true)}</article>`;
-  const n = rep ? u.staffIn + u.org + u.ext : null;
+  const n = rep ? uTot(u) : null;
   const state = rep ? (s.late ? "late" : "ok") : (s.wait ? "wait" : (s.cls === "crit" ? "miss" : "idle"));
   const open = withMenu && UI.menu === m.id;
   const chip = rep ? s.time : (s.cls === "crit" ? "חסר" : s.txt);
@@ -427,7 +436,7 @@ function unitCard(u, D, admin, withMenu = true){
     <div class="umgr">${esc(m.name||"טרם הוגדר מנהל")}${allSites().length>1?` · ${esc(siteOf(m))}`:""}</div>
     <div class="ubottom">
       <div class="unrow"><b class="unum">${n===null?"—":fmt(n)}</b>${withMenu && D>=TODAY && D<=MAXD && canReport(m.id)?`<a class="rbtn ${rep?"":"due"}" data-act="go-report" data-d="${D}" href="#report-${esc(m.id)}">${rep?MI.edit+"עדכון":MI.send+"דיווח"}</a>`:""}</div>
-      <span class="usub">${rep?`סגל ${fmt(u.staffIn)} · חניכים ${fmt(u.org+u.ext)}`:(s.cls==="crit"?"לא התקבל דיווח":"טרם דווח")}</span>
+      <span class="usub">${rep?`סגל ${fmt(u.staffIn+u.cstaff)} · חניכים ${fmt(u.org+u.ext)}`:(s.cls==="crit"?"לא התקבל דיווח":"טרם דווח")}</span>
     </div>
     ${open?`<div class="umenu" role="menu">
       <button role="menuitem" data-act="copy" data-token="${esc(m.token)}">${MI.link}העתקת קישור אישי</button>
@@ -473,7 +482,7 @@ function renderHistory(){
   const series = [
     {k:"onSite", name:"סה\"כ באתרים", col:"var(--ink)"},
     {k:"trainees", name:"חניכים", col:"var(--s-org)"},
-    {k:"staffIn", name:"סגל באתרים", col:"var(--s-staff)"}
+    {k:"staff", name:"סגל באתרים", col:"var(--s-staff)"}
   ];
   const path = k => data.map((x,i)=>`${i?"L":"M"}${X(i).toFixed(1)} ${Y(x[k]).toFixed(1)}`).join("");
   const every = Math.ceil(days.length/8);
@@ -493,7 +502,7 @@ function renderHistory(){
   </svg>`;
   const rows = data.slice().reverse().map(x => `<tr class="click" data-act="goday" data-d="${x.D}">
     <td><div class="t1">${heLong(x.D)}</div></td>
-    <td class="n">${fmt(x.onSite)}</td><td class="n">${fmt(x.staffIn)}</td>${FEATURES.STAFF_OUT?`<td class="n">${fmt(x.staffOut)}</td>`:""}<td class="n">${fmt(x.org)}</td><td class="n">${fmt(x.ext)}</td><td class="n">${x.courses.length}</td>
+    <td class="n">${fmt(x.onSite)}</td><td class="n">${fmt(x.staff)}</td>${FEATURES.STAFF_OUT?`<td class="n">${fmt(x.staffOut)}</td>`:""}<td class="n">${fmt(x.org)}</td><td class="n">${fmt(x.ext)}</td><td class="n">${x.courses.length}</td>
     <td><span class="status ${x.total&&x.reported===x.total?"good":pend(x)?"muted":"crit"}"><i></i>${x.reported}/${x.total}</span></td></tr>`).join("");
   const avg = Math.round(data.reduce((a,x)=>a+x.onSite,0)/data.length);
   const full = data.filter(x=>x.total&&x.reported===x.total).length;
@@ -508,7 +517,7 @@ function renderHistory(){
     <div class="legend">${series.map(s=>`<span><i style="background:${s.col}"></i>${s.name}</span>`).join("")}<span><i style="background:var(--good)"></i>דיווח מלא</span><span><i style="background:var(--crit)"></i>דיווח חסר</span></div></div>
     <div class="card chart"><div class="tscroll">${svg}</div><div class="tip" id="htip" hidden></div></div></section>
   <section class="sec"><div class="sec-h"><h2>כל הימים</h2><div class="toolbar"><span style="font-size:13px;color:var(--muted)">לחיצה על שורה פותחת את תמונת המצב של אותו יום</span><button class="btn" data-act="export">הורדה לאקסל</button></div></div>
-    <div class="card"><div class="tscroll"><table><thead><tr><th>תאריך</th><th class="n">סה"כ באתרים</th><th class="n">סגל באתרים</th>${FEATURES.STAFF_OUT?`<th class="n">סגל בחוץ</th>`:""}<th class="n">חניכי ארגון</th><th class="n">חיצוניים</th><th class="n">השתלמויות</th><th>דיווחו</th></tr></thead><tbody>${rows}</tbody></table></div></div></section>`;
+    <div class="card"><div class="tscroll"><table><thead><tr><th>תאריך</th><th class="n">סה"כ באתרים</th><th class="n">סגל באתרים</th>${FEATURES.STAFF_OUT?`<th class="n">סגל בחוץ</th>`:""}<th class="n">מכב״ה</th><th class="n">לא מכב״ה</th><th class="n">השתלמויות</th><th>דיווחו</th></tr></thead><tbody>${rows}</tbody></table></div></div></section>`;
 }
 function wireHistory(){
   const svg = document.getElementById("histsvg"), hit = document.getElementById("hhit"), tip = document.getElementById("htip"), hx = document.getElementById("hx");
@@ -604,6 +613,7 @@ function renderPerms(){
     <div class="sec-h"><h2><span class="h-ic r-${r}">${roleIcon(r)}</span>${ROLE_INFO[r].plural}</h2><span class="meta">${ROLE_INFO[r].desc}</span></div>
     <div class="card mem-list">${by(r).map(memberRow).join("") || `<div class="empty">אין ${ROLE_INFO[r].plural} עדיין.</div>`}</div>
   </section>`).join("")}
+  ${coursesSectionHTML()}
   ${specialSectionHTML()}
   <section class="sec"><div class="sec-h"><h2><span class="h-ic r-unit">${MI.send}</span>מנהלי מגמות</h2><span class="meta">כל מנהל מגמה מדווח רק על המגמה שלו</span></div>
     <div class="card" style="padding:14px 18px;font-size:13.5px;color:var(--ink-2)">את הקישור האישי של מנהל מגמה שולחים מהכרטיס שלה בלשונית <button class="btn link" style="display:inline;padding:0 2px;color:var(--brand)" data-act="tab" data-t="status">דיווחי מגמות</button> (⋮ ← וואטסאפ).</div></section>`;
@@ -713,29 +723,75 @@ async function specialAction(a, b){
   return true;
 }
 
+/* ---------- course management (admins) ---------- */
+const CM = { confirm:null, past:false };
+function coursesSectionHTML(){
+  const all = [...S.courses.entries()].filter(([,c]) => !c.cancelled).map(([id,c]) => ({id, ...c}));
+  const list = all.filter(c => CM.past || c.end >= TODAY).sort((a,b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.name.localeCompare(b.name, "he"));
+  const ended = all.filter(c => c.end < TODAY).length;
+  const row = c => { const m = S.managers.get(c.mid) || {}, live = c.start <= TODAY && c.end >= TODAY;
+    return `<div class="mem">
+      <span class="mem-ic r-unit">${PI.cal}</span>
+      <div class="mem-main"><b>${esc(c.name)}</b><span>${esc(m.track || "—")} · ${c.start === c.end ? heMid(c.start) : `${heShort(c.start)}–${heShort(c.end)}`}</span></div>
+      <div class="mem-st"><span class="cm-n">סגל ${fmt(c.staff||0)} · מכב״ה ${fmt(c.org)} · לא מכב״ה ${fmt(c.ext)}</span>${live?`<span class="ustate good"><i></i>פעילה</span>`:c.end < TODAY?`<span class="ustate muted"><i></i>הסתיימה</span>`:""}</div>
+      <div class="mem-acts">${CM.confirm === c.id
+        ? `<span class="cm-q">למחוק? היא תוסר מהלוח ומהדיווחים.</span><button class="btn sm danger-solid" data-act="cm-del-yes" data-id="${c.id}">מחיקה</button><button class="btn sm" data-act="cm-cancel">ביטול</button>`
+        : `<button class="btn link danger" data-act="cm-del" data-id="${c.id}">${MI.trash}מחיקה</button>`}</div>
+    </div>`; };
+  return `<section class="sec">
+    <div class="sec-h"><h2><span class="h-ic r-unit">${PI.cal}</span>השתלמויות</h2><span class="meta">השתלמויות פעילות ועתידיות. רק מנהל מערכת יכול למחוק.</span></div>
+    <div class="card mem-list">
+      ${list.map(row).join("") || `<div class="empty">אין השתלמויות ${CM.past ? "" : "פעילות או עתידיות"}.</div>`}
+      ${ended ? `<div class="sd-tools"><button class="btn link" data-act="cm-past">${CM.past ? "הסתרת השתלמויות שהסתיימו" : `הצגת ${ended} השתלמויות שהסתיימו (90 הימים האחרונים)`}</button></div>` : ""}
+    </div></section>`;
+}
+async function courseAction(a, b){
+  if (!canAdmin()) return;
+  if (a === "cm-del") { CM.confirm = b.dataset.id; render(true); }
+  else if (a === "cm-cancel") { CM.confirm = null; render(true); }
+  else if (a === "cm-past") { CM.past = !CM.past; CM.confirm = null; render(true); }
+  else if (a === "cm-del-yes") {
+    b.disabled = true;
+    try { await API.removeCourse(b.dataset.id); CM.confirm = null; toast("ההשתלמות נמחקה."); }
+    catch(e) { toast(errMsg(e)); b.disabled = false; }
+    render(true);
+  }
+}
+
 /* ---------- reporter ---------- */
-const R = { step:0, draft:null, adding:null, sentAt:null, date:null, pendingDate:null };
+const R = { step:0, draft:null, adding:null, sentAt:null, dates:null, pendingDate:null };
 function reporterManager(id){ const m = S.managers.get(id); return m && m.active !== false && !isHiddenUnit(m) && canReport(id) ? {id, ...m} : null; }
-const myCourses = (mid, D = R.date || TODAY) => [...S.courses.entries()].filter(([,c]) => c.mid === mid && !c.cancelled && c.start <= D && c.end >= D).map(([id,c]) => ({id, ...c}));
+const myCourses = (mid, D = (R.dates || [TODAY])[0]) => [...S.courses.entries()].filter(([,c]) => c.mid === mid && !c.cancelled && c.start <= D && c.end >= D).map(([id,c]) => ({id, ...c}));
+// השתלמויות שפעילות לפחות באחד מהימים שנבחרו
+const coursesOn = (mid, Ds) => [...S.courses.entries()].filter(([,c]) => c.mid === mid && !c.cancelled && Ds.some(D => c.start <= D && c.end >= D)).map(([id,c]) => ({id, ...c})).sort((a,b) => a.start < b.start ? -1 : 1);
 function reportDays(){ const out = []; for (let d = TODAY; d <= MAXD; d = addDays(d, 1)) if (d === TODAY || isWork(d)) out.push(d); return out; }
 const defaultReportDate = () => isWork(TODAY) ? TODAY : (reportDays().find(isWork) || TODAY);
 // סוף ההשתלמות הארוכה ביותר שממשיכה אחרי D (עד אליו הדיווח מועבר אוטומטית)
 function carryUntil(mid, D){ let u = null; for (const c of S.courses.values()) if (c.mid === mid && !c.cancelled && c.start <= D && c.end > D && (!u || c.end > u)) u = c.end; return u; }
-function countsFor(mid, D, counts){ const out = {}; for (const c of myCourses(mid, D)) { const k = counts[c.id]; out[c.id] = {org: k ? k.org||0 : c.org||0, ext: k ? k.ext||0 : c.ext||0}; } return out; }
+function countsFor(mid, D, counts){ const out = {}; for (const c of myCourses(mid, D)) { const k = counts[c.id]; out[c.id] = {org: k ? k.org||0 : c.org||0, ext: k ? k.ext||0 : c.ext||0, staff: k ? k.staff||0 : c.staff||0}; } return out; }
+const dateList = Ds => Ds.map(heShort).join(", ");
 function initDraft(m){
-  const D = R.date, rep = S.reports.get(D + "_" + m.id), cs = myCourses(m.id, D);
+  const Ds = R.dates, D = Ds[0], cs = coursesOn(m.id, Ds);
+  const reps = Ds.map(x => S.reports.get(x + "_" + m.id)).filter(Boolean);
+  const rep = S.reports.get(D + "_" + m.id) || reps[0] || null;
   let prev = null; for (const r of S.reports.values()) if (r.mid === m.id && r.date < D && (!prev || r.date > prev.date)) prev = r;
   const counts = {};
-  for (const c of cs) { const k = rep && rep.counts && rep.counts[c.id]; counts[c.id] = k ? {org:k.org, ext:k.ext} : {org:c.org||0, ext:c.ext||0}; }
-  R.draft = { mid:m.id, date:D, staffIn: rep ? rep.staffIn : (prev ? prev.staffIn : 0), staffOut: rep ? rep.staffOut : (prev ? prev.staffOut : 0),
+  for (const c of cs) { const k = rep && rep.counts && rep.counts[c.id]; counts[c.id] = k ? {org:k.org||0, ext:k.ext||0, staff: k.staff ?? c.staff ?? 0} : {org:c.org||0, ext:c.ext||0, staff:c.staff||0}; }
+  const manual = reps.filter(r => !r.carried);
+  R.draft = { mid:m.id, key:Ds.join(","), staffIn: rep ? rep.staffIn : (prev ? prev.staffIn : 0), staffOut: rep ? rep.staffOut : (prev ? prev.staffOut : 0),
     fromPrev: !rep && !!prev, carried: rep && rep.carried ? rep.carried : null, noCourse: rep ? !!rep.noCourse && cs.length===0 : false, counts,
-    existing: !!rep && !rep.carried, existingAt: rep && !rep.carried ? timeOf(rep.at) : "" };
+    existing: manual.length > 0, existingN: manual.length, existingAt: manual.length ? timeOf(manual[0].at) : "" };
 }
 function stepper(id, val, label, small){
   return `<div class="stepper ${small?"small":""}"><button type="button" data-act="inc" data-k="${id}" data-n="1" aria-label="הוספה: ${label}">+</button>
     <input id="st-${id.replace(/[^a-z0-9-]/gi,"_")}" data-step="${id}" inputmode="numeric" pattern="[0-9]*" value="${val}" aria-label="${label}">
     <button type="button" data-act="inc" data-k="${id}" data-n="-1" aria-label="הפחתה: ${label}">−</button></div>`;
 }
+// שלושת המספרים של השתלמות: סגל, מכב"ה, לא מכב"ה
+const trio = (pre, k) => `<div class="three">
+  <div class="srow"><label>סגל</label>${stepper(`${pre}staff`, k.staff||0, "סגל ההשתלמות", true)}</div>
+  <div class="srow"><label>${L_ORG}</label>${stepper(`${pre}org`, k.org||0, L_ORG, true)}</div>
+  <div class="srow"><label>${L_EXT}</label>${stepper(`${pre}ext`, k.ext||0, L_EXT, true)}</div></div>`;
 function renderReporter(token){
   if (!ready()) return `<div class="loading"><div class="bar"></div><div>טוען…</div></div>`;
   const m = token ? reporterManager(token) : null;
@@ -747,64 +803,71 @@ function renderReporter(token){
       ${!token?`<div class="picker">${list.filter(x=>canReport(x.id)).map(x=>`<button data-act="pick" data-token="${esc(x.id)}"><span><b style="font-weight:500">${esc(x.track)}</b><br><small style="color:var(--muted)">${esc(x.name||"")}</small></span><span aria-hidden="true">‹</span></button>`).join("")}</div>`:""}
       <a class="btn" href="#">חזרה ללוח</a></div></div>`;
   }
-  if (!R.date || R.date < TODAY || R.date > MAXD) R.date = defaultReportDate();
-  if (!R.draft || R.draft.mid !== m.id || R.draft.date !== R.date) { initDraft(m); R.step = 0; }
-  const D = R.date, d = R.draft, cs = myCourses(m.id, D), isToday = D === TODAY, until = carryUntil(m.id, D);
+  R.dates = (R.dates || []).filter(x => x >= TODAY && x <= MAXD);
+  if (!R.dates.length) R.dates = [defaultReportDate()];
+  if (!R.draft || R.draft.mid !== m.id || R.draft.key !== R.dates.join(",")) { initDraft(m); R.step = 0; }
+  const Ds = R.dates, D = Ds[0], multi = Ds.length > 1, d = R.draft, cs = coursesOn(m.id, Ds), isToday = !multi && D === TODAY, until = carryUntil(m.id, Ds.at(-1));
+  const when = multi ? `${Ds.length} ימים · ${dateList(Ds)}` : heMid(D);
   const hour = Number(nowHM().slice(0,2));
   const greet = hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : "ערב טוב";
   let body = "", foot = "";
   if (R.step === 0) {
     const chips = reportDays().map(x => { const r = S.reports.get(x + "_" + m.id);
-      return `<button class="dchip ${r ? (r.carried ? "is-auto" : "is-done") : ""}" data-act="rdate" data-d="${x}" aria-pressed="${x===D}"><b>${x===TODAY?"היום":DAYS.at(dow(x))}</b><span>${heShort(x)}</span><i></i></button>`; }).join("");
-    const stLine = d.existing ? `<span class="status good"><i></i>${isToday?"דיווחת היום":"דיווחת על היום הזה"} ב-${d.existingAt}</span><span>${isToday?"אפשר לעדכן עד סוף היום.":"אפשר לעדכן עד אותו יום."}</span>`
+      return `<button class="dchip ${r ? (r.carried ? "is-auto" : "is-done") : ""}" data-act="rdate" data-d="${x}" aria-pressed="${Ds.includes(x)}"><b>${x===TODAY?"היום":DAYS.at(dow(x))}</b><span>${heShort(x)}</span><i></i></button>`; }).join("");
+    const stLine = multi
+      ? `<span class="status muted"><i></i>נבחרו ${Ds.length} ימים</span><span>אותו דיווח יישמר לכל הימים${d.existingN?`. ${d.existingN===1?"יום אחד כבר דווח ויעודכן":`${d.existingN} ימים כבר דווחו ויעודכנו`}`:""}.</span>`
+      : d.existing ? `<span class="status good"><i></i>${isToday?"דיווחת היום":"דיווחת על היום הזה"} ב-${d.existingAt}</span><span>${isToday?"אפשר לעדכן עד סוף היום.":"אפשר לעדכן עד אותו יום."}</span>`
       : d.carried ? `<span class="status good"><i></i>מולא אוטומטית מהדיווח של ${heMid(d.carried)}</span><span>אפשר לעדכן אם משהו השתנה.</span>`
       : isToday ? `<span class="status ${nowHM()<dlFor(TODAY)?"muted":"crit"}"><i></i>${nowHM()<dlFor(TODAY)?"טרם דיווחת היום":"עבר מועד הדיווח"}</span><span>הדיווח נסגר ב-${dlFor(TODAY)}.</span>`
       : `<span class="status muted"><i></i>דיווח מראש</span><span>אפשר לדווח עד שבוע קדימה.</span>`;
-    body = `<div class="eyebrow">${heLong(D)}</div><h2>${greet}${m.name?", "+esc(m.name.split(" ")[0]):""}</h2>
+    body = `<div class="eyebrow">${multi ? dateList(Ds) : heLong(D)}</div><h2>${greet}${m.name?", "+esc(m.name.split(" ")[0]):""}</h2>
       <p class="lead">דיווח ההתייצבות של <b style="color:var(--ink);font-weight:600">${esc(m.track)}</b>, ${esc(siteOf(m))}.</p>
-      <div class="dpick-wrap"><div class="dpick-l">על איזה יום מדווחים?</div><div class="dpick" role="group" aria-label="תאריך הדיווח">${chips}</div>
+      <div class="dpick-wrap"><div class="dpick-l">על אילו ימים מדווחים? <span>אפשר לסמן כמה ימים יחד</span></div><div class="dpick" role="group" aria-label="ימי הדיווח">${chips}</div>
       <div class="dlegend"><span class="is-done"><i></i>דווח</span><span class="is-auto"><i></i>המשך אוטומטי</span></div></div>
       <div class="statusline">${stLine}</div>
       ${isToday && !isWork(TODAY)?`<div class="note">${specialOf(TODAY)?esc(specialOf(TODAY).label||"יום מיוחד")+": אין חובת דיווח היום.":`היום יום ${DAYS.at(dow(TODAY))}. בדרך כלל אין צורך בדיווח.`}</div>`:""}`;
-    foot = `<button class="btn primary" data-act="rstep" data-n="1">${d.existing?"עדכון הדיווח":d.carried?"בדיקה ועדכון":"התחלה"}</button>`;
+    foot = `<button class="btn primary" data-act="rstep" data-n="1">${d.existing && !multi?"עדכון הדיווח":d.carried && !multi?"בדיקה ועדכון":multi?`דיווח על ${Ds.length} ימים`:"התחלה"}</button>`;
   } else if (R.step === 1) {
-    body = `<div class="eyebrow">שלב 1 מתוך 3 · ${heMid(D)}</div><h2>סגל ומדריכים</h2><p class="lead">כמה אנשי סגל של המגמה נמצאים ${isToday?"היום":"ביום הזה"} באתר${FEATURES.STAFF_OUT?", וכמה לא":""}.</p>
+    body = `<div class="eyebrow">שלב 1 מתוך 3 · ${when}</div><h2>סגל המגמה</h2><p class="lead">כמה אנשי סגל של המגמה נמצאים ${isToday?"היום":multi?"בימים האלה":"ביום הזה"} באתר${FEATURES.STAFF_OUT?", וכמה לא":""}. את סגל ההשתלמויות מזינים בשלב הבא.</p>
       ${d.carried?`<div class="note"><span class="tag">המשך אוטומטי</span>מולא מהדיווח של ${heMid(d.carried)}. עדכנו אם משהו השתנה.</div>`:d.fromPrev?`<div class="note"><span class="tag">מולא מהדיווח הקודם</span>עדכנו אם משהו השתנה.</div>`:""}
-      <div class="rcard"><div class="srow"><label for="st-staffIn">${isToday?"באתר היום":"באתר"}</label>${stepper("staffIn", d.staffIn, "סגל באתר")}</div>
+      <div class="rcard"><div class="srow"><label for="st-staffIn">${isToday?"באתר היום":"באתר"}</label><span class="hint">סגל שלא משויך להשתלמות מסוימת.</span>${stepper("staffIn", d.staffIn, "סגל המגמה באתר")}</div>
       ${FEATURES.STAFF_OUT?`<div class="srow"><label for="st-staffOut">מחוץ לאתר</label><span class="hint">עבודה מהבית, תפקיד בחוץ, חופש. בלי לפרט.</span>${stepper("staffOut", d.staffOut, "סגל מחוץ לאתר")}</div>`:""}</div>`;
     foot = `<button class="btn back" data-act="rstep" data-n="-1">חזרה</button><button class="btn primary" data-act="rstep" data-n="1">המשך</button>`;
   } else if (R.step === 2) {
-    const cards = cs.map(c => { const all = workdaysBetween(c.start,c.end), n = all.indexOf(D)+1; const k = d.counts[c.id] || {org:0,ext:0};
-      return `<div class="ccard"><div class="ch"><b>${esc(c.name)}</b><small>${all.length>1?`יום ${n} מתוך ${all.length} · ${heShort(c.start)}–${heShort(c.end)}`:"השתלמות של יום אחד"}${all.length>1&&c.start<D?" · ממשיכה מהיום הקודם":""}</small></div>
-        <div class="two"><div class="srow"><label>חניכי הארגון</label>${stepper(`c:${c.id}:org`, k.org, "חניכי הארגון", true)}</div>
-        <div class="srow"><label>מחוץ לארגון</label>${stepper(`c:${c.id}:ext`, k.ext, "חניכים מחוץ לארגון", true)}</div></div></div>`; }).join("");
+    const cards = cs.map(c => { const all = workdaysBetween(c.start,c.end), n = all.indexOf(D)+1; const k = d.counts[c.id] || {org:0,ext:0,staff:0};
+      const range = all.length>1 ? `${heShort(c.start)}–${heShort(c.end)}` : heShort(c.start);
+      const sub = multi ? (all.length>1 ? `${all.length} ימים · ${range}` : `השתלמות של יום אחד · ${range}`)
+        : (all.length>1 ? `יום ${n} מתוך ${all.length} · ${range}${c.start<D?" · ממשיכה מהיום הקודם":""}` : "השתלמות של יום אחד");
+      return `<div class="ccard"><div class="ch"><b>${esc(c.name)}</b><small>${sub}</small></div>${trio(`c:${c.id}:`, k)}</div>`; }).join("");
     const a = R.adding;
     const addForm = a ? `<div class="rcard"><h3>השתלמות חדשה</h3>
       <div class="field"><label for="a-name">שם ההשתלמות</label><input id="a-name" data-abind="name" value="${esc(a.name)}" placeholder="לדוגמה: השתלמות חומ&quot;ס – שטח"></div>
       <div class="two"><div class="field"><label for="a-start">מתאריך</label><input id="a-start" type="date" data-abind="start" value="${a.start}"></div>
       <div class="field"><label for="a-end">עד תאריך</label><input id="a-end" type="date" data-abind="end" value="${a.end}" min="${a.start}"></div></div>
       <span style="font-size:12.5px;color:var(--muted);margin-top:-8px">השתלמות של כמה ימים תופיע בכל הימים שלה, והדיווח יועבר אליהם אוטומטית.</span>
-      <div class="two"><div class="srow"><label>חניכי הארגון</label>${stepper("a:org", a.org, "חניכי הארגון", true)}</div><div class="srow"><label>מחוץ לארגון</label>${stepper("a:ext", a.ext, "חניכים מחוץ לארגון", true)}</div></div>
+      ${trio("a:", a)}
       <div class="toolbar"><button class="btn primary" data-act="add-save">הוספת ההשתלמות</button><button class="btn link" data-act="add-cancel">ביטול</button></div></div>` : "";
-    body = `<div class="eyebrow">שלב 2 מתוך 3 · ${heMid(D)}</div><h2>${isToday?"השתלמויות היום":"השתלמויות ביום הזה"}</h2><p class="lead">${cs.length?"השתלמויות פעילות מופיעות כאן מראש. עדכנו את מספר החניכים אם צריך.":"אין למגמה השתלמות פעילה ביום הזה."}</p>
+    body = `<div class="eyebrow">שלב 2 מתוך 3 · ${when}</div><h2>${isToday?"השתלמויות היום":multi?"השתלמויות בימים האלה":"השתלמויות ביום הזה"}</h2><p class="lead">${cs.length?`השתלמויות פעילות מופיעות כאן מראש. עדכנו סגל וחניכים אם צריך.${multi?" המספרים יישמרו לכל יום שבו ההשתלמות פעילה.":""}`:`אין למגמה השתלמות פעילה ${multi?"בימים האלה":"ביום הזה"}.`}</p>
       ${cards}${until?`<div class="note"><span class="tag">המשך אוטומטי</span>הדיווח יועבר לבד לכל ימי ההשתלמות, עד ${heMid(until)}. אם משהו משתנה, מעדכנים רק את אותו יום.</div>`:""}${addForm}
       ${!a?`<button class="btn" data-act="add-open" style="height:48px;border-style:dashed;border-radius:14px">הוספת השתלמות</button>`:""}
-      ${!cs.length && !a?`<label class="check"><input type="checkbox" id="nocourse" ${d.noCourse?"checked":""}> אין השתלמות ביום הזה</label>`:""}`;
+      ${!cs.length && !a?`<label class="check"><input type="checkbox" id="nocourse" ${d.noCourse?"checked":""}> אין השתלמות ${multi?"בימים האלה":"ביום הזה"}</label>`:""}`;
     const canNext = cs.length > 0 || d.noCourse;
     foot = `<button class="btn back" data-act="rstep" data-n="-1">חזרה</button>${a
       ? `<button class="btn primary" data-act="add-save" data-next="1">הוספה והמשך</button>`
       : `<button class="btn primary" data-act="rstep" data-n="1" ${canNext?"":"disabled"}>${canNext?"המשך":"הוסיפו השתלמות או סמנו \"אין\""}</button>`}`;
   } else if (R.step === 3) {
-    const o = cs.reduce((s,c)=>s+(d.counts[c.id]?.org||0),0), e = cs.reduce((s,c)=>s+(d.counts[c.id]?.ext||0),0);
-    const cells = [["סגל באתר", d.staffIn], ...(FEATURES.STAFF_OUT ? [["סגל מחוץ לאתר", d.staffOut]] : []), ["חניכי הארגון", o], ["מחוץ לארגון", e]];
-    body = `<div class="eyebrow">שלב 3 מתוך 3</div><h2>אישור ושליחה</h2><p class="lead">${esc(m.track)} · ${heLong(D)}</p>
+    const sum = f => cs.reduce((s,c)=>s+(d.counts[c.id]?.[f]||0),0);
+    const o = sum("org"), e = sum("ext"), sf = sum("staff");
+    const cells = [["סגל", d.staffIn + sf], ...(FEATURES.STAFF_OUT ? [["סגל מחוץ לאתר", d.staffOut]] : []), [L_ORG, o], [L_EXT, e]];
+    body = `<div class="eyebrow">שלב 3 מתוך 3</div><h2>אישור ושליחה</h2><p class="lead">${esc(m.track)} · ${multi ? `${Ds.length} ימים: ${dateList(Ds)}` : heLong(D)}</p>
       <div class="rcard"><div class="sumgrid c${cells.length}">${cells.map(([k,v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
-      ${cs.length?`<div style="display:grid;gap:6px;font-size:14px">${cs.map(c=>`<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(c.name)}</span><span>${(d.counts[c.id]?.org||0)+(d.counts[c.id]?.ext||0)}</span></div>`).join("")}</div>`:`<div style="color:var(--muted);font-size:14px">אין השתלמות ביום הזה.</div>`}
+      ${cs.length?`<div style="display:grid;gap:6px;font-size:14px">${cs.map(c=>{const k=d.counts[c.id]||{};return `<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(c.name)}</span><span style="color:var(--muted);white-space:nowrap">סגל ${k.staff||0} · ${(k.org||0)+(k.ext||0)} חניכים</span></div>`;}).join("")}</div>`:`<div style="color:var(--muted);font-size:14px">אין השתלמות ${multi?"בימים האלה":"ביום הזה"}.</div>`}
+      ${multi?`<div class="carry-note">אותו דיווח יישמר לכל ${Ds.length} הימים.</div>`:""}
       ${until?`<div class="carry-note">הדיווח יועבר אוטומטית לימי ההשתלמות הבאים, עד ${heMid(until)}.</div>`:""}</div>`;
     foot = `<button class="btn back" data-act="rstep" data-n="-1">חזרה</button><button class="btn primary" data-act="send">${d.existing?"עדכון הדיווח":"שליחת הדיווח"}</button>`;
   } else {
     body = `<div class="done"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="cc" cx="50" cy="50" r="45" fill="none" stroke="var(--good)" stroke-width="3"/><path class="ck" d="M31 52 L44 65 L70 38" fill="none" stroke="var(--good)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <h2>${isToday?"הדיווח התקבל":"הדיווח נשמר"}</h2><p class="lead">${isToday?`נשלח ב-${R.sentAt}. הוא כבר מופיע בלוח של אגף ההדרכה.`:`הדיווח ל${heLong(D)} נשמר ויופיע בלוח.`}${until?` הוא יועבר אוטומטית עד ${heMid(until)}.`:""}</p></div>`;
+      <h2>${isToday?"הדיווח התקבל":"הדיווח נשמר"}</h2><p class="lead">${isToday?`נשלח ב-${R.sentAt}. הוא כבר מופיע בלוח של אגף ההדרכה.`:multi?`הדיווח נשמר ל-${Ds.length} ימים: ${dateList(Ds)}.`:`הדיווח ל${heLong(D)} נשמר ויופיע בלוח.`}${until?` הוא יועבר אוטומטית עד ${heMid(until)}.`:""}</p></div>`;
     foot = `<button class="btn back" data-act="rstep" data-n="-3">עריכה</button><a class="btn primary" href="#">חזרה ללוח</a>`;
   }
   return `<div class="rep">
@@ -850,6 +913,7 @@ document.addEventListener("click", async e => {
   const a = b.dataset.act;
   if (a === "menu") { UI.menu = UI.menu === b.dataset.id ? null : b.dataset.id; UI.confirmDel = null; render(true); return; }
   if (UI.menu) UI.menu = null;
+  if (a.startsWith("cm-")) { await courseAction(a, b); return; }
   if (a.startsWith("pf-") && await specialAction(a, b)) return;
   if (a.startsWith("perm-") || a.startsWith("pf-")) { await permAction(a, b); return; }
   if (a === "tab") { if (b.dataset.t === "perms") P.list = null; P.form = null; UI.tab = b.dataset.t; UI.mgrForm = null; UI.editId = null; UI.confirmDel = null; render(true); window.scrollTo({top:0}); }
@@ -861,8 +925,8 @@ document.addEventListener("click", async e => {
   else if (a === "copy") copyText(linkFor(b.dataset.token));
   else if (a === "export") {
     const q = v => `"${String(v).replace(/"/g,'""')}"`;
-    const rows = [["תאריך","סה\"כ באתרים","סגל באתרים","סגל בחוץ","חניכי ארגון","חניכים מחוץ לארגון","השתלמויות","מגמות שדיווחו","סה\"כ מגמות"]];
-    (HIST ? HIST.data.slice().reverse() : []).forEach(x => rows.push([x.D,x.onSite,x.staffIn,x.staffOut,x.org,x.ext,x.courses.length,x.reported,x.total]));
+    const rows = [["תאריך","סה\"כ באתרים","סגל באתרים","סגל בחוץ","חניכים מכב״ה","חניכים לא מכב״ה","השתלמויות","מגמות שדיווחו","סה\"כ מגמות"]];
+    (HIST ? HIST.data.slice().reverse() : []).forEach(x => rows.push([x.D,x.onSite,x.staff,x.staffOut,x.org,x.ext,x.courses.length,x.reported,x.total]));
     if (!FEATURES.STAFF_OUT) rows.forEach(r => r.splice(3, 1));
     const blob = new Blob(["\ufeff" + rows.map(r => r.map(q).join(",")).join("\r\n")], {type:"text/csv;charset=utf-8"});
     const url = URL.createObjectURL(blob), link = document.createElement("a");
@@ -896,22 +960,22 @@ document.addEventListener("click", async e => {
   else if (a === "reload") { location.reload(); }
   else if (a === "forget-token") { lsSet("unit-token", null); TOKEN = ""; history.replaceState(null, "", location.pathname); S.err = ""; render(true); }
   else if (a === "inc") { const k = b.dataset.k; setVal(k, Math.max(0, getVal(k) + (+b.dataset.n)), true); }
-  else if (a === "rdate") { R.date = b.dataset.d; R.draft = null; R.adding = null; render(true); }
+  else if (a === "rdate") { const d = b.dataset.d, set = new Set(R.dates || []); if (set.has(d)) { if (set.size > 1) set.delete(d); } else set.add(d); R.dates = [...set].sort(); R.draft = null; R.adding = null; render(true); }
   else if (a === "go-report") { R.pendingDate = b.dataset.d; }
   else if (a === "rstep") { R.step = Math.max(0, Math.min(3, R.step + (+b.dataset.n))); render(true); window.scrollTo({top:0}); }
-  else if (a === "add-open") { R.adding = {name:"", start:R.date||TODAY, end:R.date||TODAY, org:0, ext:0}; render(true); document.getElementById("a-name")?.focus(); }
+  else if (a === "add-open") { R.adding = {name:"", start:(R.dates||[TODAY])[0], end:(R.dates||[TODAY])[0], staff:0, org:0, ext:0}; render(true); document.getElementById("a-name")?.focus(); }
   else if (a === "add-cancel") { R.adding = null; render(true); }
   else if (a === "add-save") {
-    const x = R.adding, name = (x.name||"").trim(), D = R.date || TODAY;
+    const x = R.adding, name = (x.name||"").trim(), Ds = R.dates || [TODAY];
     if (!name) { toast("צריך לתת שם להשתלמות."); document.getElementById("a-name")?.focus(); return; }
     if (!x.start || !x.end || x.end < x.start) { toast("תאריך הסיום צריך להיות אחרי תאריך ההתחלה."); return; }
     b.disabled = true;
     try {
-      const id = await API.addCourse(R.draft.mid, {name, start:x.start, end:x.end, org:x.org||0, ext:x.ext||0});
-      const covers = x.start <= D && x.end >= D;
-      if (id && covers) R.draft.counts[id] = {org:x.org||0, ext:x.ext||0};
+      const id = await API.addCourse(R.draft.mid, {name, start:x.start, end:x.end, org:x.org||0, ext:x.ext||0, staff:x.staff||0});
+      const covers = Ds.some(D => x.start <= D && x.end >= D);
+      if (id && covers) R.draft.counts[id] = {org:x.org||0, ext:x.ext||0, staff:x.staff||0};
       R.adding = null;
-      R.draft.noCourse = !myCourses(R.draft.mid, D).length;
+      R.draft.noCourse = !coursesOn(R.draft.mid, Ds).length;
       toast(covers ? (x.end > x.start ? "ההשתלמות נוספה לכל התאריכים שלה." : "ההשתלמות נוספה.")
                    : `ההשתלמות נשמרה ל-${heShort(x.start)}${x.end > x.start ? "–" + heShort(x.end) : ""}. היא תופיע בדיווח של הימים האלה.`);
       if (b.dataset.next) { R.step = 3; window.scrollTo({top:0}); }
@@ -919,12 +983,12 @@ document.addEventListener("click", async e => {
     render(true);
   }
   else if (a === "send") {
-    const d = R.draft, D = d.date || TODAY; const cs = myCourses(d.mid, D);
-    const counts = {}; cs.forEach(c => counts[c.id] = {org: d.counts[c.id]?.org||0, ext: d.counts[c.id]?.ext||0});
-    const prev = S.reports.get(D + "_" + d.mid);
+    const d = R.draft, Ds = R.dates || [TODAY]; const cs = coursesOn(d.mid, Ds);
+    const counts = {}; cs.forEach(c => counts[c.id] = {org: d.counts[c.id]?.org||0, ext: d.counts[c.id]?.ext||0, staff: d.counts[c.id]?.staff||0});
+    const prev = S.reports.get(Ds[0] + "_" + d.mid);
     b.disabled = true; b.textContent = "שולח…";
     try {
-      await API.submitReport(d.mid, D, d.staffIn, d.staffOut, counts);
+      await API.submitReports(d.mid, Ds, d.staffIn, d.staffOut, counts);
       R.sentAt = nowHM(); d.existing = true; d.carried = null; d.existingAt = prev && !prev.carried ? timeOf(prev.at) : R.sentAt; R.step = 4;
     } catch(e) { toast(errMsg(e)); }
     render(true); window.scrollTo({top:0});

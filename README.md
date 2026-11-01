@@ -44,7 +44,7 @@ npx serve .
 > מפתח ה-anon מיועד להיות ציבורי. ההגנה על הנתונים היא בהרשאות שבמסד הנתונים. **לעולם אל תשימו בקובץ את מפתח ה-`service_role`.**
 
 ### 4. יצירת הטבלאות
-ב-Supabase: **SQL Editor ← New query**. מריצים לפי הסדר: `sql/01_schema.sql`, `sql/02_seed.sql`, `sql/03_permissions.sql`, `sql/04_upgrades.sql`, `sql/05_advance_reports.sql`.
+ב-Supabase: **SQL Editor ← New query**. מריצים לפי הסדר: `sql/01_schema.sql`, `sql/02_seed.sql`, `sql/03_permissions.sql`, `sql/04_upgrades.sql`, `sql/05_advance_reports.sql`, `sql/06_course_staff.sql`.
 
 ### 5. העלאה ל-GitHub והפעלת האתר
 עם Claude Code (או ידנית):
